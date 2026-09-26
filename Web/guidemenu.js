@@ -49,7 +49,7 @@
     return apiClient.ajax({
       type: method,
       url: apiClient.getUrl(path),
-      dataType: method === 'GET' ? 'json' : undefined
+      dataType: 'json'
     });
   }
 
@@ -86,10 +86,14 @@
       var mark = button.getAttribute('data-marked') !== 'true';
       button.disabled = true;
       api(mark ? 'POST' : 'DELETE', 'EpisodeHistory/Program/' + programId + '/Watched')
-        .then(function () {
+        .then(function (r) {
           setButton(button, mark);
-          // The plugin re-marks the guide ~1 s later and takes a few seconds.
-          setTimeout(pollChanges, 6000);
+          // The plugin has already re-titled this airing and replies with the new title, so
+          // show it now; the episode's other airings arrive with the next change poll.
+          var cell = document.querySelector('.programCell[data-id="' + programId + '"]');
+          if (cell && r) {
+            setSecondaryTitle(cell, r.EpisodeTitle);
+          }
         })
         .catch(function () {
           log('marking program ' + programId + ' failed');
@@ -106,7 +110,7 @@
    * The guide grid doesn't reload by itself, so marks made elsewhere (Wholphin, another
    * browser, a finished recording) wouldn't show until a page refresh. While a guide is on
    * screen, ask the plugin every 5 s which guide entries it re-titled since last time and
-   * update just those cells. Also run 6 s after this page's own mark/unmark.
+   * update just those cells.
    */
   var POLL_MS = 5000;
   var changesVersion = null;

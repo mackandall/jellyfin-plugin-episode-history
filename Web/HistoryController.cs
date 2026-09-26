@@ -116,7 +116,20 @@ public sealed class HistoryController : ControllerBase
     /// </summary>
     [HttpPost("Program/{programId}/Watched")]
     [Authorize]
-    public IActionResult MarkWatched([FromRoute] Guid programId)
+    public Task<IActionResult> MarkWatched([FromRoute] Guid programId, CancellationToken cancellationToken) =>
+        SetWatched(programId, true, cancellationToken);
+
+    /// <summary>Removes the calling user's hand-made watched mark for that episode, from any airing.</summary>
+    [HttpDelete("Program/{programId}/Watched")]
+    [Authorize]
+    public Task<IActionResult> UnmarkWatched([FromRoute] Guid programId, CancellationToken cancellationToken) =>
+        SetWatched(programId, false, cancellationToken);
+
+    /// <summary>
+    /// Replies with the clicked entry's new episode title (already saved), so the client
+    /// can show the mark at once; the episode's other airings follow with the sweep ~1 s later.
+    /// </summary>
+    private async Task<IActionResult> SetWatched(Guid programId, bool watched, CancellationToken cancellationToken)
     {
         var userId = CurrentUserId();
         if (userId == Guid.Empty)
@@ -130,43 +143,30 @@ public sealed class HistoryController : ControllerBase
         }
 
         var identity = EpisodeIdentity.FromProgram(program, Marker());
-        if (identity.ValidProgramId is null && !identity.NameKeys().Any())
+        var existing = ManualRows(userId, identity);
+        bool changed;
+        if (watched)
         {
-            return BadRequest("This guide entry has no program id, episode numbers or title to remember it by.");
+            if (identity.ValidProgramId is null && !identity.NameKeys().Any())
+            {
+                return BadRequest("This guide entry has no program id, episode numbers or title to remember it by.");
+            }
+
+            changed = existing.Count == 0
+                && _store.Upsert(HistoryStore.KindWatched, userId, programId, identity, ManualSource, DateTime.UtcNow);
+        }
+        else
+        {
+            changed = _store.DeleteRows(existing.Select(r => r.Id)) > 0;
         }
 
-        if (ManualRows(userId, identity).Count == 0)
+        var episodeTitle = await _sweeper.ApplyNowAsync(programId, cancellationToken).ConfigureAwait(false);
+        if (changed)
         {
-            _store.Upsert(HistoryStore.KindWatched, userId, programId, identity, ManualSource, DateTime.UtcNow);
-            _sweeper.Request("marked watched", TimeSpan.FromSeconds(1));
+            _sweeper.Request(watched ? "marked watched" : "unmarked watched", TimeSpan.FromSeconds(1));
         }
 
-        return NoContent();
-    }
-
-    /// <summary>Removes the calling user's hand-made watched mark for that episode, from any airing.</summary>
-    [HttpDelete("Program/{programId}/Watched")]
-    [Authorize]
-    public IActionResult UnmarkWatched([FromRoute] Guid programId)
-    {
-        var userId = CurrentUserId();
-        if (userId == Guid.Empty)
-        {
-            return Unauthorized();
-        }
-
-        if (_libraryManager.GetItemById(programId) is not LiveTvProgram program)
-        {
-            return NotFound();
-        }
-
-        var rows = ManualRows(userId, EpisodeIdentity.FromProgram(program, Marker()));
-        if (_store.DeleteRows(rows.Select(r => r.Id)) > 0)
-        {
-            _sweeper.Request("unmarked watched", TimeSpan.FromSeconds(1));
-        }
-
-        return NoContent();
+        return Ok(new { MarkedWatched = watched, EpisodeTitle = episodeTitle });
     }
 
     /// <summary>

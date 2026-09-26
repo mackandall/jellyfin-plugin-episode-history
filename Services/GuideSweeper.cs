@@ -324,7 +324,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                 markedButScheduled.Add(program.Id);
             }
 
-            var desired = cfg.EnableGuideMarks && !scheduled ? marker.Compose(original, state) : original;
+            var desired = DesiredTitle(cfg, marker, original, state, scheduled);
             if (!string.Equals(desired, current, StringComparison.Ordinal))
             {
                 program.EpisodeTitle = desired;
@@ -395,6 +395,53 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             "{Updated} entries updated, {Cancelled} recordings cancelled, {Fixed} timers refreshed ({Ms} ms)",
             reason, programs.Count, watched, inLibrary, recordedBefore, changed.Count, cancelled.Count, fixedTimers, sw.ElapsedMilliseconds);
         return result;
+    }
+
+    /// <summary>
+    /// The episode title a guide entry should carry. Entries with an active timer stay
+    /// unmarked, since the timer copies the title into the recording's name.
+    /// </summary>
+    private static string? DesiredTitle(PluginConfiguration cfg, GuideMarker marker, string? original, HistoryState state, bool scheduled) =>
+        cfg.EnableGuideMarks && !scheduled ? marker.Compose(original, state) : original;
+
+    /// <summary>
+    /// Re-marks one guide entry right away (after a "mark as watched" from a client menu),
+    /// by the same rules as a sweep, and returns its new episode title so the client can
+    /// show it immediately. The episode's other airings follow with the next sweep.
+    /// </summary>
+    public async Task<string?> ApplyNowAsync(Guid programId, CancellationToken cancellationToken)
+    {
+        await _runLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_libraryManager.GetItemById(programId) is not LiveTvProgram program)
+            {
+                return null;
+            }
+
+            var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+            var marker = new GuideMarker(cfg);
+            var state = BuildIndex(cfg, marker).Evaluate(EpisodeIdentity.FromProgram(program, marker));
+
+            var timers = (await _liveTvManager.GetTimers(new TimerQuery(), cancellationToken).ConfigureAwait(false)).Items;
+            var scheduled = timers.Any(t => (t.Status == RecordingStatus.New || t.Status == RecordingStatus.InProgress)
+                && Guid.TryParse(t.ProgramId, out var id) && id == programId);
+
+            var current = program.EpisodeTitle;
+            var desired = DesiredTitle(cfg, marker, marker.Strip(current), state, scheduled);
+            if (!string.Equals(desired, current, StringComparison.Ordinal))
+            {
+                program.EpisodeTitle = desired;
+                await program.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
+                RecordChanges(new[] { programId });
+            }
+
+            return desired;
+        }
+        finally
+        {
+            _runLock.Release();
+        }
     }
 
     private HistoryIndex BuildIndex(PluginConfiguration cfg, GuideMarker marker)
