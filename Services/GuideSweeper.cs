@@ -101,8 +101,12 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     private readonly object _changesLock = new();
     private readonly LinkedList<(long Version, Guid ProgramId)> _changes = new();
     private long _version;
+    private static readonly IReadOnlyDictionary<string, string?> EmptyTitles = new Dictionary<string, string?>();
 
-    public sealed record GuideChanges(long Version, bool Reset, IReadOnlyList<Guid> ProgramIds);
+    /// <param name="Titles">Each changed entry's current episode title (null = none), keyed by
+    /// the id in the same dash-less form Jellyfin uses for item ids, so a client can patch its
+    /// loaded guide without fetching the items.</param>
+    public sealed record GuideChanges(long Version, bool Reset, IReadOnlyList<Guid> ProgramIds, IReadOnlyDictionary<string, string?> Titles);
 
     /// <summary>
     /// Guide entries re-titled since <paramref name="since"/> (a Version from an earlier
@@ -114,18 +118,27 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         {
             if (since is null || since.Value == _version)
             {
-                return new GuideChanges(_version, false, Array.Empty<Guid>());
+                return new GuideChanges(_version, false, Array.Empty<Guid>(), EmptyTitles);
             }
 
             // Asked about versions no longer retained, or from a previous server run.
             var oldest = _changes.First?.Value.Version ?? _version + 1;
             if (since.Value > _version || since.Value < oldest - 1)
             {
-                return new GuideChanges(_version, true, Array.Empty<Guid>());
+                return new GuideChanges(_version, true, Array.Empty<Guid>(), EmptyTitles);
             }
 
             var ids = _changes.Where(c => c.Version > since.Value).Select(c => c.ProgramId).Distinct().ToList();
-            return new GuideChanges(_version, false, ids);
+            var titles = new Dictionary<string, string?>(ids.Count);
+            foreach (var id in ids)
+            {
+                if (_libraryManager.GetItemById(id) is LiveTvProgram program)
+                {
+                    titles[id.ToString("N")] = program.EpisodeTitle;
+                }
+            }
+
+            return new GuideChanges(_version, false, ids, titles);
         }
     }
 
