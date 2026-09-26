@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
+    <EmbeddedResource Include="Web\guidemenu.js" />
   </ItemGroup>
 
   <!-- Plain files next to the DLL: meta.json's "imagePath" is the only icon mechanism that

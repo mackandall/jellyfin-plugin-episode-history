@@ -75,6 +75,17 @@ dotnet build -c Release
 sudo ./install.sh   # copies DLL + meta.json + icon.png into the plugin dir, restarts Jellyfin
 ```
 
+For the "Mark as watched" button in jellyfin-web's guide, also patch the web client once
+(and again after every jellyfin-web package upgrade, which overwrites the patch):
+
+```bash
+sudo ./install-web.sh   # adds one <script> line to /usr/share/jellyfin/web/index.html
+```
+
+Clicking a guide program then shows **Mark as watched** / **Mark as unwatched** under
+the Record buttons. The script is served by the plugin (`/EpisodeHistory/web/guidemenu.js`),
+so plugin updates update it too.
+
 On first start the history is empty, so it is seeded from the library: recordings become
 "recorded" and played items become "watched". The guide is marked about 90 seconds after
 startup. Dashboard → Plugins → Episode History shows counts, the last sweep, recent
