@@ -83,7 +83,11 @@ sudo ./install-web.sh   # adds one <script> line to /usr/share/jellyfin/web/inde
 ```
 
 Clicking a guide program then shows **Mark as watched** / **Mark as unwatched** under
-the Record buttons. The script is served by the plugin (`/EpisodeHistory/web/guidemenu.js`),
+the Record buttons. Admins also get **Forget this episode** when the history knows
+something about the episode: press it twice to delete that history (watched marks, and
+records of recordings that have since been deleted), so the guide stops marking it and a
+series recording will record it again. Items still in the library keep their history.
+The script is served by the plugin (`/EpisodeHistory/web/guidemenu.js`),
 so plugin updates update it too.
 
 On first start the history is empty, so it is seeded from the library: recordings become
@@ -128,9 +132,13 @@ backup**:
 - History database: `<jellyfin data>/episode-history/history.db`
 - API (admin): `GET /EpisodeHistory/Status`, `GET /EpisodeHistory/Recent`,
   `POST /EpisodeHistory/Sweep`, `POST /EpisodeHistory/Import`,
-  `GET /EpisodeHistory/Backup`, `POST /EpisodeHistory/Restore?replace=false`;
+  `GET /EpisodeHistory/Backup`, `POST /EpisodeHistory/Restore?replace=false`,
+  `DELETE /EpisodeHistory/Program/{programId}/History` forgets the episode that entry
+  airs (every user's watched marks and records of deleted recordings; replies with how
+  many rows were forgotten and how many were kept because their item is still in the library);
   (any user) `GET /EpisodeHistory/Program/{programId}` shows what the history knows about
-  one guide entry, including whether the caller marked it watched by hand;
+  one guide entry, including whether the caller marked it watched by hand and (CanForget) whether an admin
+  could forget it;
   `POST` / `DELETE /EpisodeHistory/Program/{programId}/Watched` marks or unmarks the
   episode that entry airs as watched by the caller (for something seen elsewhere). Every
   airing of that episode then gets the watched mark. The Wholphin fork's guide dialog

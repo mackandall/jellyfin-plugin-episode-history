@@ -138,7 +138,8 @@ public sealed class HistoryController : ControllerBase
 
         var userId = CurrentUserId();
         var markedWatched = userId != Guid.Empty && ManualRows(userId, found.Identity).Count > 0;
-        return Ok(new { found.Identity, found.Identity.ValidProgramId, found.State, MarkedWatched = markedWatched });
+        var canForget = User.IsInRole("Administrator") && ForgettableRows(found.Identity).Count > 0;
+        return Ok(new { found.Identity, found.Identity.ValidProgramId, found.State, MarkedWatched = markedWatched, CanForget = canForget });
     }
 
     /// <summary>
@@ -156,6 +157,36 @@ public sealed class HistoryController : ControllerBase
     [Authorize]
     public Task<IActionResult> UnmarkWatched([FromRoute] Guid programId, CancellationToken cancellationToken) =>
         SetWatched(programId, false, cancellationToken);
+
+    /// <summary>
+    /// "Forget this episode": deletes what the history remembers about the episode a guide
+    /// entry airs, for every user — hand-made watched marks, and watched / recorded rows of
+    /// recordings that have since been deleted — so it's unmarked and a series recording
+    /// will record it again. Rows of items still in the library are kept (the library
+    /// import would only add them back); KeptInLibrary says how many.
+    /// </summary>
+    [HttpDelete("Program/{programId}/History")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public async Task<IActionResult> Forget([FromRoute] Guid programId, CancellationToken cancellationToken)
+    {
+        if (_libraryManager.GetItemById(programId) is not LiveTvProgram program)
+        {
+            return NotFound();
+        }
+
+        var identity = EpisodeIdentity.FromProgram(program, Marker());
+        var matching = _store.LoadAll().Where(r => r.Identity.SameEpisode(identity)).ToList();
+        var forgettable = ForgettableRows(matching);
+        var forgotten = _store.DeleteRows(forgettable.Select(r => r.Id));
+
+        var episodeTitle = await _sweeper.ApplyNowAsync(programId, cancellationToken).ConfigureAwait(false);
+        if (forgotten > 0)
+        {
+            _sweeper.Request("forgot episode", TimeSpan.FromSeconds(1));
+        }
+
+        return Ok(new { Forgotten = forgotten, KeptInLibrary = matching.Count - forgettable.Count, EpisodeTitle = episodeTitle });
+    }
 
     /// <summary>
     /// Replies with the clicked entry's new episode title (already saved), so the client
@@ -198,7 +229,8 @@ public sealed class HistoryController : ControllerBase
             _sweeper.Request(watched ? "marked watched" : "unmarked watched", TimeSpan.FromSeconds(1));
         }
 
-        return Ok(new { MarkedWatched = watched, EpisodeTitle = episodeTitle });
+        var canForget = User.IsInRole("Administrator") && ForgettableRows(identity).Count > 0;
+        return Ok(new { MarkedWatched = watched, EpisodeTitle = episodeTitle, CanForget = canForget });
     }
 
     /// <summary>
@@ -235,6 +267,14 @@ public sealed class HistoryController : ControllerBase
 
     private List<HistoryStore.Row> ManualRows(Guid userId, EpisodeIdentity identity) =>
         _store.LoadWatched(userId, ManualSource).Where(r => r.Identity.SameEpisode(identity)).ToList();
+
+    private List<HistoryStore.Row> ForgettableRows(EpisodeIdentity identity) =>
+        ForgettableRows(_store.LoadAll().Where(r => r.Identity.SameEpisode(identity)));
+
+    // Hand-made marks (their item id is a guide entry) always go; other rows only once
+    // their library item is gone.
+    private List<HistoryStore.Row> ForgettableRows(IEnumerable<HistoryStore.Row> rows) =>
+        rows.Where(r => r.Source == ManualSource || _libraryManager.GetItemById(r.ItemId) is null or LiveTvProgram).ToList();
 
     // The id Jellyfin's auth handler puts on every authenticated request (its own
     // ClaimsPrincipal.GetUserId reads the same claim; that helper lives in Jellyfin.Api,

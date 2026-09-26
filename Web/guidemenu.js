@@ -4,7 +4,8 @@
  * Injected into jellyfin-web's index.html (see install-web.sh). jellyfin-web offers no
  * "Mark played" for guide programs (its canMarkPlayed() returns false for Type
  * "Program"), so this adds its own button to the program dialog, backed by the plugin's
- * POST/DELETE /EpisodeHistory/Program/{id}/Watched. Every airing of that episode then
+ * POST/DELETE /EpisodeHistory/Program/{id}/Watched (plus, for admins, "Forget this
+ * episode" via DELETE /EpisodeHistory/Program/{id}/History). Every airing of that episode then
  * carries the watched mark in the guide, in every client. While a guide is on screen it
  * also polls /EpisodeHistory/GuideChanges every 5 s, so marks made anywhere else appear
  * without reloading the page.
@@ -27,6 +28,7 @@
   'use strict';
 
   var ROW_CLASS = 'episodeHistoryWatchedRow';
+  var FORGET_ROW_CLASS = 'episodeHistoryForgetRow';
   var lastProgramId = null;
 
   function log(msg) {
@@ -61,8 +63,115 @@
   }
 
   function buildRow(programId, marked) {
+    var row = buttonRow(ROW_CLASS);
+    var button = row.querySelector('button');
+    setButton(button, marked);
+
+    button.addEventListener('click', function () {
+      var mark = button.getAttribute('data-marked') !== 'true';
+      button.disabled = true;
+      api(mark ? 'POST' : 'DELETE', 'EpisodeHistory/Program/' + programId + '/Watched')
+        .then(function (r) {
+          setButton(button, mark);
+          // The plugin has already re-titled this airing and replies with the new title, so
+          // show it now; the episode's other airings arrive with the next change poll.
+          showTitle(programId, r);
+          showForgetRow(row.parentNode, programId, !!(r && r.CanForget));
+        })
+        .catch(function () {
+          log('marking program ' + programId + ' failed');
+        })
+        .then(function () {
+          button.disabled = false;
+        });
+    });
+
+    return row;
+  }
+
+  function showTitle(programId, r) {
+    var cell = document.querySelector('.programCell[data-id="' + programId + '"]');
+    if (cell && r) {
+      setSecondaryTitle(cell, r.EpisodeTitle);
+    }
+  }
+
+  /*
+   * "Forget this episode" (admins only, offered only when there's something to forget):
+   * deletes the episode's history — watched marks, and records of recordings since deleted
+   * — so the guide stops marking it and a series recording will record it again. Asks for
+   * a second tap instead of a confirm() dialog, which TV remotes handle poorly.
+   */
+  function buildForgetRow(programId) {
+    var row = buttonRow(FORGET_ROW_CLASS);
+    var button = row.querySelector('button');
+    var text = button.querySelector('.buttonText');
+    button.querySelector('.recordingIcon').className = 'material-icons recordingIcon history';
+    text.textContent = 'Forget this episode';
+    var armed = false;
+    var disarmTimer = null;
+
+    button.addEventListener('click', function () {
+      if (!armed) {
+        armed = true;
+        text.textContent = 'Press again to forget';
+        disarmTimer = setTimeout(function () {
+          armed = false;
+          text.textContent = 'Forget this episode';
+        }, 4000);
+        return;
+      }
+
+      clearTimeout(disarmTimer);
+      button.disabled = true;
+      api('DELETE', 'EpisodeHistory/Program/' + programId + '/History')
+        .then(function (r) {
+          showTitle(programId, r);
+          // Hand-made marks are gone too.
+          var watchedButton = document.querySelector('.' + ROW_CLASS + ' button');
+          if (watchedButton) {
+            setButton(watchedButton, false);
+          }
+          text.textContent = r && r.KeptInLibrary
+            ? 'Forgotten (still in library)'
+            : 'Forgotten';
+        })
+        .catch(function () {
+          log('forgetting program ' + programId + ' failed');
+          button.disabled = false;
+          armed = false;
+          text.textContent = 'Forget this episode';
+        });
+    });
+
+    return row;
+  }
+
+  function showForgetRow(fields, programId, show) {
+    if (!fields) {
+      return;
+    }
+
+    var existing = fields.querySelector('.' + FORGET_ROW_CLASS);
+    var used = existing && existing.querySelector('button').disabled;
+    if (show) {
+      // A used row (showing "Forgotten") is replaced by a fresh one.
+      if (used) {
+        existing.parentNode.removeChild(existing);
+      }
+      if (!existing || used) {
+        fields.appendChild(buildForgetRow(programId));
+      }
+    } else if (existing && !used) {
+      // A used row stays, showing its "Forgotten" result.
+      existing.parentNode.removeChild(existing);
+    }
+  }
+
+  // A button row matching jellyfin-web's own "Record" rows in the program dialog.
+  function buttonRow(className) {
     var row = document.createElement('div');
-    row.className = 'recordingFields-buttons flex align-items-center ' + ROW_CLASS;
+    row.className = 'recordingFields-buttons flex align-items-center ' + className;
 
     var wrap = document.createElement('div');
     var button = document.createElement('button');
@@ -80,29 +189,6 @@
     button.appendChild(text);
     wrap.appendChild(button);
     row.appendChild(wrap);
-    setButton(button, marked);
-
-    button.addEventListener('click', function () {
-      var mark = button.getAttribute('data-marked') !== 'true';
-      button.disabled = true;
-      api(mark ? 'POST' : 'DELETE', 'EpisodeHistory/Program/' + programId + '/Watched')
-        .then(function (r) {
-          setButton(button, mark);
-          // The plugin has already re-titled this airing and replies with the new title, so
-          // show it now; the episode's other airings arrive with the next change poll.
-          var cell = document.querySelector('.programCell[data-id="' + programId + '"]');
-          if (cell && r) {
-            setSecondaryTitle(cell, r.EpisodeTitle);
-          }
-        })
-        .catch(function () {
-          log('marking program ' + programId + ' failed');
-        })
-        .then(function () {
-          button.disabled = false;
-        });
-    });
-
     return row;
   }
 
@@ -300,6 +386,7 @@
           return;
         }
         fields.appendChild(buildRow(programId, !!(info && info.MarkedWatched)));
+        showForgetRow(fields, programId, !!(info && info.CanForget));
       })
       .catch(function () {
         log('Episode History plugin not available for program ' + programId);
