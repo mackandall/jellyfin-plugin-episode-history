@@ -468,7 +468,13 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                 IsVirtualItem = false,
                 Recursive = true
             });
+            // A stub (a recording that failed after a few seconds) doesn't count as having the
+            // episode: it would mark the guide and cancel the next airing's recording. Only a
+            // known short runtime excludes an item; checking file sizes for items without one
+            // would read every file on network shares.
+            var minTicks = TimeSpan.FromMinutes(cfg.MinRecordingMinutes).Ticks;
             index.AddLibraryItems(items
+                .Where(i => i.RunTimeTicks is not > 0 || i.RunTimeTicks >= minTicks)
                 .Select(i => EpisodeIdentity.FromLibraryItem(i, marker, null))
                 .OfType<EpisodeIdentity>());
         }

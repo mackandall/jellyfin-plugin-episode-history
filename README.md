@@ -64,7 +64,8 @@ installed match by name only. Recordings made after it store the id from their t
   or hand-added recordings* (default 5 minutes) long, so stubs of stopped recordings don't.
 - *Count episodes and movies from all libraries as in library* (default off) makes items
   in any library, not only DVR recordings, count as in library for the marks and for
-  duplicate skipping.
+  duplicate skipping. Items whose known runtime is under the minimum length above don't
+  count, so a stub left by a failed recording can't cancel the next airing.
 - Changing a mark symbol is safe: the plugin remembers every symbol it has used and
   removes old marks before adding new ones.
 
