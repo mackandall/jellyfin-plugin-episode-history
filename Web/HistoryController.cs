@@ -213,6 +213,24 @@ public sealed class HistoryController : ControllerBase
         return Ok(_sweeper.GetChangesSince(since));
     }
 
+    /// <summary>
+    /// The mark symbols currently put in front of guide titles, so the web guide script can
+    /// tag marked cells with CSS classes (eh-watched, eh-inlibrary, eh-recordedbefore).
+    /// </summary>
+    [HttpGet("Symbols")]
+    [Authorize]
+    public IActionResult Symbols()
+    {
+        var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        return Ok(new
+        {
+            Watched = cfg.WatchedSymbol,
+            InLibrary = cfg.InLibrarySymbol,
+            RecordedBefore = cfg.RecordedBeforeSymbol,
+            cfg.EnableGuideMarks
+        });
+    }
+
     private const string ManualSource = "manual";
 
     private List<HistoryStore.Row> ManualRows(Guid userId, EpisodeIdentity identity) =>

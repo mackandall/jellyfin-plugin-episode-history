@@ -135,6 +135,9 @@
       .then(function (r) {
         var first = changesVersion === null;
         changesVersion = r.Version;
+        if (first || r.Reset || Date.now() - symbolsLoadedAt > 5 * 60000) {
+          loadSymbols();
+        }
         if (first) {
           return null;
         }
@@ -169,6 +172,81 @@
     }));
   }
 
+  /*
+   * CSS hooks for styling marks under Dashboard -> General -> Custom CSS. A marked guide
+   * cell gets `eh-marked` plus `eh-watched` / `eh-inlibrary` / `eh-recordedbefore`, and the
+   * symbols in its episode-title line are wrapped in `span.eh-mark`, e.g.
+   *   .programCell.eh-watched .guideProgramNameText { font-style: italic; }
+   *   .eh-mark { color: #4caf50; }
+   * The symbols are read from the plugin, so changing them in its settings keeps working.
+   */
+  var MARK_CLASSES = ['eh-marked', 'eh-watched', 'eh-inlibrary', 'eh-recordedbefore'];
+  var symbols = null;
+  var markRegex = null;
+  var symbolsLoadedAt = 0;
+
+  function escapeRegex(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function loadSymbols() {
+    symbolsLoadedAt = Date.now();
+    return api('GET', 'EpisodeHistory/Symbols').then(function (r) {
+      var list = [r.Watched, r.InLibrary, r.RecordedBefore].filter(function (x) { return !!x; });
+      // Longest first, so a multi-character symbol wins over one it contains.
+      list.sort(function (a, b) { return b.length - a.length; });
+      symbols = r;
+      markRegex = list.length ? new RegExp('^((?:' + list.map(escapeRegex).join('|') + ')+)\\s*([\\s\\S]*)$', 'u') : null;
+      // Re-check every cell against the (possibly new) symbols.
+      [].slice.call(document.querySelectorAll('.programSecondaryTitle[data-eh]')).forEach(function (el) {
+        el.removeAttribute('data-eh');
+      });
+      scheduleCheck();
+    }).catch(function () { log('loading mark symbols failed'); });
+  }
+
+  function decorate(secondary) {
+    if (!markRegex) {
+      return;
+    }
+
+    var text = secondary.textContent;
+    if (secondary.getAttribute('data-eh') === text) {
+      return; // already handled for this exact text
+    }
+
+    var flags = { watched: false, inlibrary: false, recordedbefore: false };
+    var match = markRegex.exec(text);
+    if (match) {
+      var marks = match[1];
+      flags.watched = marks.indexOf(symbols.Watched) !== -1;
+      flags.inlibrary = marks.indexOf(symbols.InLibrary) !== -1;
+      flags.recordedbefore = marks.indexOf(symbols.RecordedBefore) !== -1;
+
+      var span = document.createElement('span');
+      span.className = 'eh-mark';
+      span.textContent = marks;
+      secondary.textContent = '';
+      secondary.appendChild(span);
+      secondary.appendChild(document.createTextNode(' ' + match[2]));
+    }
+
+    secondary.setAttribute('data-eh', secondary.textContent);
+    setCellClasses(secondary.closest('.programCell'), flags);
+  }
+
+  function setCellClasses(cell, flags) {
+    if (!cell) {
+      return;
+    }
+
+    var any = flags.watched || flags.inlibrary || flags.recordedbefore;
+    cell.classList.toggle('eh-marked', any);
+    cell.classList.toggle('eh-watched', flags.watched);
+    cell.classList.toggle('eh-inlibrary', flags.inlibrary);
+    cell.classList.toggle('eh-recordedbefore', flags.recordedbefore);
+  }
+
   // Same markup jellyfin-web's guide uses for the episode-title line; a program that had
   // no episode title (e.g. a movie) doesn't have the element yet.
   function setSecondaryTitle(cell, title) {
@@ -178,6 +256,7 @@
       if (info) {
         info.parentNode.removeChild(info);
       }
+      setCellClasses(cell, { watched: false, inlibrary: false, recordedbefore: false });
       return;
     }
 
@@ -195,6 +274,7 @@
     }
 
     secondary.textContent = title;
+    decorate(secondary);
   }
 
   setInterval(function () {
@@ -239,14 +319,26 @@
     if (fields) {
       tryInject(fields);
     }
+
+    // jellyfin-web re-renders guide cells when scrolling or changing day; tag new ones.
+    if (markRegex) {
+      var titles = document.querySelectorAll('.programCell .programSecondaryTitle');
+      for (var i = 0; i < titles.length; i++) {
+        if (titles[i].getAttribute('data-eh') !== titles[i].textContent) {
+          decorate(titles[i]);
+        }
+      }
+    }
   }
 
-  var observer = new MutationObserver(function () {
+  function scheduleCheck() {
     if (!scheduled) {
       scheduled = true;
       window.requestAnimationFrame(check);
     }
-  });
+  }
+
+  var observer = new MutationObserver(scheduleCheck);
 
   observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
 

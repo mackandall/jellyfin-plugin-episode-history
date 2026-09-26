@@ -99,6 +99,29 @@
                 </div>
 
                 <div class="verticalSection">
+                    <h2>Styling marks in the web guide</h2>
+                    <div class="fieldDescription">
+                        With the web guide script installed (install-web.sh), marked guide cells get the CSS classes
+                        <code>eh-marked</code>, <code>eh-watched</code>, <code>eh-inlibrary</code> and
+                        <code>eh-recordedbefore</code>, and the symbols are wrapped in <code>span.eh-mark</code>.
+                        Paste rules like these into Dashboard &rarr; General &rarr; Custom CSS code
+                        (web browsers and apps built on the web client only; TV apps ignore it):
+                    </div>
+                    <pre style="user-select:all;white-space:pre-wrap;">/* Watched: italic, dimmed */
+.programCell.eh-watched .guideProgramNameText { font-style: italic; opacity: .6; }
+
+/* In library: colored episode line */
+.programCell.eh-inlibrary .programSecondaryTitle { color: #64b5f6; }
+
+/* Recorded before (deleted): grey */
+.programCell.eh-recordedbefore .programSecondaryTitle { color: #9e9e9e; }
+
+/* Bigger symbols, or hide them and rely on the styling above */
+.eh-mark { font-size: 1.2em; }
+/* .eh-mark { display: none; } */</pre>
+                </div>
+
+                <div class="verticalSection">
                     <h2>Backup and restore</h2>
                     <div class="fieldDescription">
                         The history already survives plugin upgrades and reinstalls. A backup file is for rebuilding

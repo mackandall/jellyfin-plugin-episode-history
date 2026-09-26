@@ -91,6 +91,21 @@ On first start the history is empty, so it is seeded from the library: recording
 startup. Dashboard → Plugins → Episode History shows counts, the last sweep, recent
 history and skipped recordings, with buttons to re-import or re-sweep.
 
+## Styling marks in the web guide
+
+With the web guide script installed, marked guide cells get CSS classes: `eh-marked`,
+plus `eh-watched`, `eh-inlibrary` and `eh-recordedbefore`. The symbols themselves are
+wrapped in `span.eh-mark`. Style them under Dashboard → General → Custom CSS, e.g.:
+
+```css
+.programCell.eh-watched .guideProgramNameText { font-style: italic; opacity: .6; }
+.programCell.eh-inlibrary .programSecondaryTitle { color: #64b5f6; }
+.eh-mark { font-size: 1.2em; }        /* or display: none, to hide the symbols */
+```
+
+This only affects web-based clients; TV apps ignore Custom CSS. It needs jellyfin-web's
+"Show episode titles" guide setting on (the default), since the marks live in that line.
+
 ## Backup and restore
 
 The history lives in Jellyfin's data folder, so it already survives plugin upgrades and
