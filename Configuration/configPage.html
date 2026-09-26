@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Episode History</title>
+</head>
+<body>
+<div id="EpisodeHistoryConfigPage"
+     data-role="page"
+     class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-checkbox">
+    <div data-role="content">
+        <div class="content-primary">
+            <form id="EpisodeHistoryConfigForm">
+
+                <div class="verticalSection">
+                    <h2>Guide marks</h2>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="EnableGuideMarks" type="checkbox" is="emby-checkbox" />
+                            <span>Mark guide entries</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Puts symbols in front of each upcoming guide entry's episode title. Marks are household-wide
+                            (watched by any user). Entries with a scheduled recording are never marked.
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="WatchedSymbol">Watched symbol</label>
+                        <input id="WatchedSymbol" type="text" is="emby-input" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="InLibrarySymbol">Recorded and still in library symbol</label>
+                        <input id="InLibrarySymbol" type="text" is="emby-input" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RecordedBeforeSymbol">Recorded before (since deleted) symbol</label>
+                        <input id="RecordedBeforeSymbol" type="text" is="emby-input" />
+                    </div>
+                </div>
+
+                <div class="verticalSection">
+                    <h2>Recording</h2>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="EnableDuplicateSkipping" type="checkbox" is="emby-checkbox" />
+                            <span>Skip series episodes already in the library</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Cancels an upcoming series-recording episode while a recorded copy of it is in the library.
+                            Delete the copy and later airings record again. One-off recordings are never cancelled, and
+                            a recording re-enabled by hand is left alone.
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="MinRecordedPercent">Minimum share recorded (%)</label>
+                        <input id="MinRecordedPercent" type="number" min="0" max="100" is="emby-input" />
+                        <div class="fieldDescription">A recording that ran for less of the programme than this doesn't count as recorded.</div>
+                    </div>
+                </div>
+
+                <div>
+                    <button type="submit" is="emby-button" class="raised button-submit block">
+                        <span>Save</span>
+                    </button>
+                </div>
+
+                <div class="verticalSection">
+                    <h2>Status</h2>
+                    <div id="Status" class="fieldDescription" style="white-space:pre-line;"></div>
+                    <button id="SweepBtn" type="button" is="emby-button" class="raised block">
+                        <span>Update guide marks and schedule now</span>
+                    </button>
+                    <button id="ImportBtn" type="button" is="emby-button" class="raised block">
+                        <span>Import history from library</span>
+                    </button>
+                    <div id="ActionResult" class="fieldDescription" style="margin-top:0.5em;white-space:pre-line;"></div>
+                </div>
+
+                <div class="verticalSection">
+                    <h2>Recent history</h2>
+                    <div id="Recent" class="fieldDescription" style="white-space:pre-line;"></div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var pluginUniqueId = "62b08fb5-2008-4b2b-ace8-e73d3e584405";
+
+            function get(path) {
+                return ApiClient.ajax({ type: "GET", url: ApiClient.getUrl(path), dataType: "json" });
+            }
+
+            function post(path) {
+                return ApiClient.ajax({ type: "POST", url: ApiClient.getUrl(path), dataType: "json" });
+            }
+
+            function when(utc) {
+                return utc ? new Date(utc).toLocaleString() : "never";
+            }
+
+            function describeSweep(s) {
+                if (!s) {
+                    return "No sweep yet since the server started.";
+                }
+                if (s.Error) {
+                    return "Last sweep (" + when(s.FinishedUtc) + ") failed: " + s.Error;
+                }
+                var lines = [
+                    "Last sweep: " + when(s.FinishedUtc) + " (" + s.Reason + ", " + s.DurationMs + " ms)",
+                    "Guide entries: " + s.Programs + " — watched " + s.Watched + ", in library " + s.InLibrary +
+                        ", recorded before " + s.RecordedBefore,
+                    "Entries updated: " + s.ProgramsUpdated + ", recordings cancelled: " + s.TimersCancelled +
+                        ", timers refreshed: " + s.TimersFixed
+                ];
+                (s.Cancelled || []).forEach(function (c) { lines.push("  cancelled: " + c); });
+                return lines.join("\n");
+            }
+
+            function showStatus() {
+                get("EpisodeHistory/Status").then(function (st) {
+                    var c = st.Counts || {};
+                    var lines = [
+                        "History: " + (c.recorded || 0) + " recorded (" + (c.recordedWithProgramId || 0) + " with a guide program id), " +
+                            (c.watched || 0) + " watched; " + (c.cancelledTimers || 0) + " recordings skipped so far",
+                        describeSweep(st.LastSweep)
+                    ];
+                    if (st.LastImport) {
+                        lines.push("Last import: " + when(st.LastImport.FinishedUtc) + " — " + st.LastImport.Recordings +
+                            " recordings, " + st.LastImport.WatchedEntries + " watched, " + st.LastImport.RowsAdded + " new rows");
+                    }
+                    lines.push("Database: " + st.DatabasePath);
+                    document.querySelector("#Status").textContent = lines.join("\n");
+                }).catch(function () {
+                    document.querySelector("#Status").textContent = "Status unavailable.";
+                });
+
+                get("EpisodeHistory/Recent?limit=25").then(function (r) {
+                    var lines = (r.History || []).map(function (h) {
+                        var id = h.Identity || {};
+                        var what = id.IsMovie
+                            ? (id.SeriesName || "?") + (id.Year ? " (" + id.Year + ")" : "")
+                            : (id.SeriesName || "?") +
+                                (id.Season != null && id.Episode != null ? " S" + id.Season + "E" + id.Episode : "") +
+                                (id.EpisodeTitle ? " — " + id.EpisodeTitle : "");
+                        return when(h.EventUtc) + "  " + h.Kind + "  " + what + (id.ProgramId ? "  [" + id.ProgramId + "]" : "") +
+                            "  (" + h.Source + ")";
+                    });
+                    (r.CancelledTimers || []).slice(0, 10).forEach(function (t) {
+                        lines.push(when(t.CancelledUtc) + "  skipped recording  " + (t.Title || t.TimerId) + "  (" + t.Reason + ")");
+                    });
+                    document.querySelector("#Recent").textContent = lines.length ? lines.join("\n") : "Nothing yet.";
+                });
+            }
+
+            document.querySelector("#EpisodeHistoryConfigPage")
+                .addEventListener("pageshow", function () {
+                    var page = this;
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginUniqueId).then(function (config) {
+                        page.querySelector("#EnableGuideMarks").checked = config.EnableGuideMarks;
+                        page.querySelector("#EnableDuplicateSkipping").checked = config.EnableDuplicateSkipping;
+                        page.querySelector("#MinRecordedPercent").value = config.MinRecordedPercent;
+                        page.querySelector("#WatchedSymbol").value = config.WatchedSymbol || "";
+                        page.querySelector("#InLibrarySymbol").value = config.InLibrarySymbol || "";
+                        page.querySelector("#RecordedBeforeSymbol").value = config.RecordedBeforeSymbol || "";
+                        Dashboard.hideLoadingMsg();
+                    });
+                    showStatus();
+                });
+
+            document.querySelector("#SweepBtn").addEventListener("click", function () {
+                var out = document.querySelector("#ActionResult");
+                out.textContent = "Updating...";
+                post("EpisodeHistory/Sweep").then(function (s) {
+                    out.textContent = describeSweep(s);
+                    showStatus();
+                }).catch(function () { out.textContent = "Update failed; see the server log."; });
+            });
+
+            document.querySelector("#ImportBtn").addEventListener("click", function () {
+                var out = document.querySelector("#ActionResult");
+                out.textContent = "Importing...";
+                post("EpisodeHistory/Import").then(function (r) {
+                    out.textContent = "Imported: " + r.Recordings + " recordings, " + r.WatchedEntries + " watched entries, " +
+                        r.RowsAdded + " new rows. The guide is re-marked in a few seconds.";
+                    showStatus();
+                }).catch(function () { out.textContent = "Import failed; see the server log."; });
+            });
+
+            document.querySelector("#EpisodeHistoryConfigForm")
+                .addEventListener("submit", function (e) {
+                    e.preventDefault();
+                    var page = document.querySelector("#EpisodeHistoryConfigPage");
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginUniqueId).then(function (config) {
+                        config.EnableGuideMarks = page.querySelector("#EnableGuideMarks").checked;
+                        config.EnableDuplicateSkipping = page.querySelector("#EnableDuplicateSkipping").checked;
+                        config.MinRecordedPercent = parseInt(page.querySelector("#MinRecordedPercent").value, 10) || 0;
+                        config.WatchedSymbol = page.querySelector("#WatchedSymbol").value;
+                        config.InLibrarySymbol = page.querySelector("#InLibrarySymbol").value;
+                        config.RecordedBeforeSymbol = page.querySelector("#RecordedBeforeSymbol").value;
+                        ApiClient.updatePluginConfiguration(pluginUniqueId, config).then(function (result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                            // Apply new settings (e.g. marks turned off) to the guide right away.
+                            post("EpisodeHistory/Sweep").then(showStatus);
+                        });
+                    });
+                    return false;
+                });
+        })();
+    </script>
+</div>
+</body>
+</html>

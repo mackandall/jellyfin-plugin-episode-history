@@ -1,0 +1,16 @@
+{
+  "category": "Live TV",
+  "changelog": "",
+  "description": "SageTV-style episode history for the DVR: remembers what was recorded and watched (even after deletion), marks guide entries (✓ watched, ● in library, ○ recorded before), and cancels series recordings of episodes already in the library.",
+  "guid": "62b08fb5-2008-4b2b-ace8-e73d3e584405",
+  "name": "Episode History",
+  "overview": "",
+  "owner": "",
+  "targetAbi": "12.0.0.0",
+  "timestamp": "0001-01-01T00:00:00.0000000Z",
+  "version": "1.0.0.0",
+  "status": "Active",
+  "autoUpdate": false,
+  "imagePath": "icon.png",
+  "assemblies": []
+}
