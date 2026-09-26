@@ -32,6 +32,26 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public int MinRecordedPercent { get; set; } = 80;
 
+    /// <summary>
+    /// Also treat episodes and movies from every library (not only DVR recordings) as "in
+    /// library": they get the in-library mark and series recordings skip them.
+    /// </summary>
+    public bool CountAllLibraries { get; set; }
+
+    /// <summary>
+    /// A file in the recordings folders that the plugin didn't see being recorded (library
+    /// import, or copied in by hand) only counts as recorded if it is at least this long, so
+    /// a stub from a recording stopped early doesn't block the next airing.
+    /// </summary>
+    public int MinRecordingMinutes { get; set; } = 5;
+
+    /// <summary>
+    /// Every mark symbol the plugin has put in the guide. Marks are recognised (and removed)
+    /// by these as well as the current and default symbols, so changing a symbol never
+    /// leaves the old one stacked in front of titles. Maintained by the plugin.
+    /// </summary>
+    public string[] UsedSymbols { get; set; } = System.Array.Empty<string>();
+
     public string WatchedSymbol
     {
         get => _watchedSymbol;

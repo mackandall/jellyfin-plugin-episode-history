@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -46,7 +45,7 @@ public sealed class LibraryImporter
         _logger = logger;
     }
 
-    public sealed record ImportResult(DateTime FinishedUtc, int Items, int Recordings, int WatchedEntries, int RowsAdded);
+    public sealed record ImportResult(DateTime FinishedUtc, int Items, int Recordings, int ShortRecordingsSkipped, int WatchedEntries, int RowsAdded);
 
     public ImportResult? LastImport { get; private set; }
 
@@ -57,11 +56,9 @@ public sealed class LibraryImporter
 
     private ImportResult Import(IProgress<double>? progress, CancellationToken cancellationToken)
     {
-        var marker = new GuideMarker(Plugin.Instance?.Configuration ?? new PluginConfiguration());
-        var folders = _recordingsManager.GetRecordingFolders()
-            .SelectMany(f => f.Locations)
-            .Select(p => Path.TrimEndingDirectorySeparator(p) + Path.DirectorySeparatorChar)
-            .ToList();
+        var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        var marker = new GuideMarker(cfg);
+        var folders = RecordingFiles.Folders(_recordingsManager);
 
         var items = _libraryManager.GetItemList(new InternalItemsQuery
         {
@@ -80,15 +77,24 @@ public sealed class LibraryImporter
         }
 
         var rows = new List<(string, Guid?, Guid, EpisodeIdentity, string, DateTime)>();
-        int recordings = 0;
+        int recordings = 0, stubs = 0;
         foreach (var item in items)
         {
-            if (identities.TryGetValue(item.Id, out var identity) && !string.IsNullOrEmpty(item.Path)
-                && folders.Any(f => item.Path.StartsWith(f, StringComparison.Ordinal)))
+            if (!identities.TryGetValue(item.Id, out var identity) || !RecordingFiles.IsUnder(item.Path, folders))
             {
-                rows.Add((HistoryStore.KindRecorded, null, item.Id, identity, "import", item.DateCreated));
-                recordings++;
+                continue;
             }
+
+            // A recording stopped early leaves a short stub that must not count as recorded.
+            if (!RecordingFiles.IsLongEnough(item, cfg.MinRecordingMinutes))
+            {
+                stubs++;
+                _logger.LogInformation("Import skipped short recording {Path}", item.Path);
+                continue;
+            }
+
+            rows.Add((HistoryStore.KindRecorded, null, item.Id, identity, "import", item.DateCreated));
+            recordings++;
         }
 
         progress?.Report(30);
@@ -116,11 +122,11 @@ public sealed class LibraryImporter
         var added = _store.UpsertMany(rows, overwrite: false);
         progress?.Report(100);
 
-        var result = new ImportResult(DateTime.UtcNow, items.Count, recordings, watched, added);
+        var result = new ImportResult(DateTime.UtcNow, items.Count, recordings, stubs, watched, added);
         LastImport = result;
         _logger.LogInformation(
-            "Episode history import: {Items} library episodes/movies, {Recordings} recordings, {Watched} watched entries; {Added} new rows",
-            items.Count, recordings, watched, added);
+            "Episode history import: {Items} library episodes/movies, {Recordings} recordings ({Stubs} too short, skipped), {Watched} watched entries; {Added} new rows",
+            items.Count, recordings, stubs, watched, added);
         return result;
     }
 }

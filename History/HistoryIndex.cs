@@ -17,6 +17,8 @@ public sealed class HistoryIndex
     private readonly Dictionary<string, List<Entry>> _byProgramId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<Entry>> _byNameKey = new(StringComparer.Ordinal);
 
+    private const string LibraryKind = "library";
+
     private sealed record Entry(string Kind, bool HasProgramId, bool ItemExists);
 
     /// <param name="rows">Every history row.</param>
@@ -43,6 +45,22 @@ public sealed class HistoryIndex
             }
 
             foreach (var key in row.Identity.NameKeys())
+            {
+                Add(_byNameKey, key, entry);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Adds library items that aren't DVR recordings (the "count all libraries" setting).
+    /// They count as in library and have no programme id, so they match by name keys.
+    /// </summary>
+    public void AddLibraryItems(IEnumerable<EpisodeIdentity> identities)
+    {
+        var entry = new Entry(LibraryKind, false, true);
+        foreach (var identity in identities)
+        {
+            foreach (var key in identity.NameKeys())
             {
                 Add(_byNameKey, key, entry);
             }

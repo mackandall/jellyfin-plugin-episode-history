@@ -31,6 +31,9 @@ namespace Jellyfin.Plugin.EpisodeHistory.Services;
 /// title and numbering — is gone. The timer is snapshotted while the recording runs; once it
 /// stops, the recording only counts if it ran for
 /// <see cref="PluginConfiguration.MinRecordedPercent"/> of the programme.</item>
+/// <item>An episode or movie copied into a recordings folder by hand (ItemAdded for a path
+/// the DVR capture didn't produce): recorded after a short delay, once Jellyfin has probed
+/// its runtime, if it is at least <see cref="PluginConfiguration.MinRecordingMinutes"/> long.</item>
 /// <item>A user marks something played / unplayed, or finishes playing it.</item>
 /// <item>A recorded item is deleted (it turns from "in library" into "recorded before").</item>
 /// </list>
@@ -41,6 +44,13 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
     /// <summary>How long to wait after a recording stops for Jellyfin to finish adding it to the library.</summary>
     private static readonly TimeSpan LibraryWait = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// How long a hand-added file waits before it is recorded: Jellyfin raises ItemAdded
+    /// before it has probed the runtime, and a finished DVR recording's own ItemAdded must
+    /// lose the race to the DVR capture, which knows more about it.
+    /// </summary>
+    private static readonly TimeSpan AddedDelay = TimeSpan.FromMinutes(2);
 
     private static readonly DtoOptions RecordingDtoOptions = new(false) { Fields = new[] { ItemFields.Path } };
 
@@ -55,6 +65,13 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
     // Recordings in progress, keyed by file path.
     private readonly ConcurrentDictionary<string, PendingRecording> _pending = new(StringComparer.Ordinal);
+
+    // Paths the DVR capture has finished with (counted or rejected), so their ItemAdded isn't
+    // mistaken for a file copied in by hand. Pruned after a few hours.
+    private readonly ConcurrentDictionary<string, DateTime> _dvrHandled = new(StringComparer.Ordinal);
+
+    // Files that appeared in a recordings folder, waiting out AddedDelay. Keyed by path.
+    private readonly ConcurrentDictionary<string, (Guid ItemId, DateTime DueUtc)> _added = new(StringComparer.Ordinal);
     private Timer? _poll;
     private int _polling;
 
@@ -86,6 +103,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        _libraryManager.ItemAdded += OnItemAdded;
         _libraryManager.ItemRemoved += OnItemRemoved;
         _userDataManager.UserDataSaved += OnUserDataSaved;
         _poll = new Timer(_ => _ = PollAsync(), null, PollInterval, PollInterval);
@@ -94,6 +112,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        _libraryManager.ItemAdded -= OnItemAdded;
         _libraryManager.ItemRemoved -= OnItemRemoved;
         _userDataManager.UserDataSaved -= OnUserDataSaved;
         _poll?.Change(Timeout.Infinite, Timeout.Infinite);
@@ -197,19 +216,110 @@ public sealed class HistoryEvents : IHostedService, IDisposable
                 {
                     if (TryComplete(path, pending))
                     {
+                        _dvrHandled[path] = DateTime.UtcNow;
                         _pending.TryRemove(path, out _);
                     }
                 }
                 catch (Exception ex)
                 {
+                    _dvrHandled[path] = DateTime.UtcNow;
                     _pending.TryRemove(path, out _);
                     _logger.LogWarning(ex, "Failed to record history for finished recording {Path}", path);
+                }
+            }
+
+            ProcessAdded();
+
+            foreach (var (path, handled) in _dvrHandled)
+            {
+                if (DateTime.UtcNow - handled > TimeSpan.FromHours(6))
+                {
+                    _dvrHandled.TryRemove(path, out _);
                 }
             }
         }
         finally
         {
             Volatile.Write(ref _polling, 0);
+        }
+    }
+
+    private void OnItemAdded(object? sender, ItemChangeEventArgs e)
+    {
+        try
+        {
+            if (e.Item is not (Episode or Movie) || e.Item.IsVirtualItem || string.IsNullOrEmpty(e.Item.Path))
+            {
+                return;
+            }
+
+            if (Config.CountAllLibraries)
+            {
+                // Any new episode/movie can change what counts as "in library".
+                _sweeper.Request("library item added");
+            }
+
+            if (!_pending.ContainsKey(e.Item.Path) && !_dvrHandled.ContainsKey(e.Item.Path)
+                && RecordingFiles.IsUnder(e.Item.Path, RecordingFiles.Folders(_recordingsManager)))
+            {
+                _added[e.Item.Path] = (e.Item.Id, DateTime.UtcNow + AddedDelay);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to handle added item {Path}", e.Item?.Path);
+        }
+    }
+
+    /// <summary>Records files copied into a recordings folder once their delay has passed.</summary>
+    private void ProcessAdded()
+    {
+        var changed = false;
+        foreach (var (path, (itemId, due)) in _added)
+        {
+            if (DateTime.UtcNow < due)
+            {
+                continue;
+            }
+
+            _added.TryRemove(path, out _);
+
+            // Still being recorded, or already handled by the DVR capture: not hand-added.
+            if (_pending.ContainsKey(path) || _dvrHandled.ContainsKey(path) || _recordingsManager.GetActiveRecordingInfo(path) is not null)
+            {
+                continue;
+            }
+
+            try
+            {
+                var item = _libraryManager.GetItemById(itemId) ?? _libraryManager.FindByPath(path, false);
+                if (item is null)
+                {
+                    continue;
+                }
+
+                if (!RecordingFiles.IsLongEnough(item, Config.MinRecordingMinutes))
+                {
+                    _logger.LogInformation("Ignoring short file added to recordings: {Path}", path);
+                    continue;
+                }
+
+                if (EpisodeIdentity.FromLibraryItem(item, new GuideMarker(Config), null) is { } identity
+                    && _store.UpsertMany(new[] { (HistoryStore.KindRecorded, (Guid?)null, item.Id, identity, "added", DateTime.UtcNow) }, overwrite: false) > 0)
+                {
+                    _logger.LogInformation("Recorded in history (added to recordings folder): {Title}", Describe(item is Episode ep ? ep.SeriesName : item.Name, item is Episode ? item.Name : null));
+                    changed = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to record added file {Path}", path);
+            }
+        }
+
+        if (changed)
+        {
+            _sweeper.Request("recording added");
         }
     }
 
@@ -321,7 +431,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
     {
         try
         {
-            if (e.Item is Video && _store.HasRecorded(e.Item.Id))
+            if (e.Item is Video && (_store.HasRecorded(e.Item.Id) || (Config.CountAllLibraries && e.Item is Episode or Movie)))
             {
                 _sweeper.Request("recording deleted");
             }

@@ -56,7 +56,17 @@ installed match by name only. Recordings made after it store the id from their t
   one-off recording is re-created. As a last resort, a finished recording whose name still
   carries a mark has it removed. The file name would keep it in that last case.
 - A finished recording only counts as recorded if it ran for at least *Minimum share
-  recorded* (default 80%) of the programme.
+  recorded* (default 80%) of the programme. Recordings are found by polling Jellyfin's
+  in-progress recordings every 30 seconds. Jellyfin raises no library event for a DVR
+  recording until it has finished, and by then the timer details are gone.
+- Episodes and movies copied into a recordings folder by hand, and anything found by the
+  library import, count as recorded only if they are at least *Minimum length for imported
+  or hand-added recordings* (default 5 minutes) long, so stubs of stopped recordings don't.
+- *Count episodes and movies from all libraries as in library* (default off) makes items
+  in any library, not only DVR recordings, count as in library for the marks and for
+  duplicate skipping.
+- Changing a mark symbol is safe: the plugin remembers every symbol it has used and
+  removes old marks before adding new ones.
 
 ## Build and install
 

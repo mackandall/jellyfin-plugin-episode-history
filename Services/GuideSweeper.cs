@@ -195,8 +195,9 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     private async Task<SweepResult> SweepCoreAsync(string reason, Stopwatch sw, CancellationToken cancellationToken)
     {
         var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        RememberSymbols(cfg);
         var marker = new GuideMarker(cfg);
-        var index = new HistoryIndex(_store.LoadAll(), id => _libraryManager.GetItemById(id) is not null);
+        var index = BuildIndex(cfg, marker);
         var now = DateTime.UtcNow;
 
         var timers = (await _liveTvManager.GetTimers(new TimerQuery(), cancellationToken).ConfigureAwait(false)).Items.ToList();
@@ -333,6 +334,46 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         return result;
     }
 
+    private HistoryIndex BuildIndex(PluginConfiguration cfg, GuideMarker marker)
+    {
+        var index = new HistoryIndex(_store.LoadAll(), id => _libraryManager.GetItemById(id) is not null);
+        if (cfg.CountAllLibraries)
+        {
+            var items = _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                IncludeItemTypes = new[] { BaseItemKind.Episode, BaseItemKind.Movie },
+                IsVirtualItem = false,
+                Recursive = true
+            });
+            index.AddLibraryItems(items
+                .Select(i => EpisodeIdentity.FromLibraryItem(i, marker, null))
+                .OfType<EpisodeIdentity>());
+        }
+
+        return index;
+    }
+
+    /// <summary>
+    /// Adds the current symbols to <see cref="PluginConfiguration.UsedSymbols"/> before they
+    /// go into the guide, so a later symbol change can still recognise and remove them.
+    /// </summary>
+    private void RememberSymbols(PluginConfiguration cfg)
+    {
+        var used = cfg.UsedSymbols ?? Array.Empty<string>();
+        var missing = new[] { cfg.WatchedSymbol, cfg.InLibrarySymbol, cfg.RecordedBeforeSymbol }
+            .Where(sym => !string.IsNullOrEmpty(sym) && !used.Contains(sym, StringComparer.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (missing.Length == 0 || Plugin.Instance is not { } plugin)
+        {
+            return;
+        }
+
+        cfg.UsedSymbols = used.Concat(missing).ToArray();
+        plugin.SaveConfiguration();
+        _logger.LogInformation("Remembering guide mark symbols {Symbols}", string.Join(" ", missing));
+    }
+
     private LiveTvProgram? GetProgram(string? id) =>
         Guid.TryParse(id, out var guid) ? _libraryManager.GetItemById(guid) as LiveTvProgram : null;
 
@@ -346,7 +387,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
 
         var marker = new GuideMarker(Plugin.Instance?.Configuration ?? new PluginConfiguration());
         var identity = EpisodeIdentity.FromProgram(program, marker);
-        var index = new HistoryIndex(_store.LoadAll(), id => _libraryManager.GetItemById(id) is not null);
+        var index = BuildIndex(Plugin.Instance?.Configuration ?? new PluginConfiguration(), marker);
         return (identity, index.Evaluate(identity));
     }
 }

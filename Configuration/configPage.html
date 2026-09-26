@@ -56,10 +56,27 @@
                         </div>
                     </div>
 
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="CountAllLibraries" type="checkbox" is="emby-checkbox" />
+                            <span>Count episodes and movies from all libraries as in library</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Off: only DVR recordings count. On: anything in any library (e.g. your regular TV shows)
+                            also gets the in-library mark, and series recordings skip it.
+                        </div>
+                    </div>
+
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="MinRecordedPercent">Minimum share recorded (%)</label>
                         <input id="MinRecordedPercent" type="number" min="0" max="100" is="emby-input" />
                         <div class="fieldDescription">A recording that ran for less of the programme than this doesn't count as recorded.</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="MinRecordingMinutes">Minimum length for imported or hand-added recordings (minutes)</label>
+                        <input id="MinRecordingMinutes" type="number" min="0" is="emby-input" />
+                        <div class="fieldDescription">Files in the recordings folders that weren't seen being recorded (import, or copied in by hand) must be at least this long to count, so stubs of stopped recordings are ignored.</div>
                     </div>
                 </div>
 
@@ -133,7 +150,7 @@
                     ];
                     if (st.LastImport) {
                         lines.push("Last import: " + when(st.LastImport.FinishedUtc) + " — " + st.LastImport.Recordings +
-                            " recordings, " + st.LastImport.WatchedEntries + " watched, " + st.LastImport.RowsAdded + " new rows");
+                            " recordings (" + st.LastImport.ShortRecordingsSkipped + " too short), " + st.LastImport.WatchedEntries + " watched, " + st.LastImport.RowsAdded + " new rows");
                     }
                     lines.push("Database: " + st.DatabasePath);
                     document.querySelector("#Status").textContent = lines.join("\n");
@@ -167,6 +184,8 @@
                         page.querySelector("#EnableGuideMarks").checked = config.EnableGuideMarks;
                         page.querySelector("#EnableDuplicateSkipping").checked = config.EnableDuplicateSkipping;
                         page.querySelector("#MinRecordedPercent").value = config.MinRecordedPercent;
+                        page.querySelector("#CountAllLibraries").checked = config.CountAllLibraries;
+                        page.querySelector("#MinRecordingMinutes").value = config.MinRecordingMinutes;
                         page.querySelector("#WatchedSymbol").value = config.WatchedSymbol || "";
                         page.querySelector("#InLibrarySymbol").value = config.InLibrarySymbol || "";
                         page.querySelector("#RecordedBeforeSymbol").value = config.RecordedBeforeSymbol || "";
@@ -188,7 +207,8 @@
                 var out = document.querySelector("#ActionResult");
                 out.textContent = "Importing...";
                 post("EpisodeHistory/Import").then(function (r) {
-                    out.textContent = "Imported: " + r.Recordings + " recordings, " + r.WatchedEntries + " watched entries, " +
+                    out.textContent = "Imported: " + r.Recordings + " recordings (" + r.ShortRecordingsSkipped + " too short, skipped), " +
+                        r.WatchedEntries + " watched entries, " +
                         r.RowsAdded + " new rows. The guide is re-marked in a few seconds.";
                     showStatus();
                 }).catch(function () { out.textContent = "Import failed; see the server log."; });
@@ -203,6 +223,8 @@
                         config.EnableGuideMarks = page.querySelector("#EnableGuideMarks").checked;
                         config.EnableDuplicateSkipping = page.querySelector("#EnableDuplicateSkipping").checked;
                         config.MinRecordedPercent = parseInt(page.querySelector("#MinRecordedPercent").value, 10) || 0;
+                        config.CountAllLibraries = page.querySelector("#CountAllLibraries").checked;
+                        config.MinRecordingMinutes = parseInt(page.querySelector("#MinRecordingMinutes").value, 10) || 0;
                         config.WatchedSymbol = page.querySelector("#WatchedSymbol").value;
                         config.InLibrarySymbol = page.querySelector("#InLibrarySymbol").value;
                         config.RecordedBeforeSymbol = page.querySelector("#RecordedBeforeSymbol").value;

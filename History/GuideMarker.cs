@@ -13,8 +13,9 @@ namespace Jellyfin.Plugin.EpisodeHistory.History;
 /// Wholphin, Moonfin, Android TV) shows in the guide cell. Entries with no episode title
 /// (most movies) get the symbols plus a word, e.g. "✓ Watched".
 ///
-/// Stripping recognises the configured symbols and the defaults, so changing a symbol in
-/// the settings doesn't strand old marks in the guide.
+/// Stripping recognises the configured symbols, the defaults and every symbol used before
+/// (<see cref="PluginConfiguration.UsedSymbols"/>), so changing a symbol in the settings
+/// doesn't strand old marks in the guide.
 /// </summary>
 public sealed class GuideMarker
 {
@@ -40,6 +41,8 @@ public sealed class GuideMarker
                 _watched, _inLibrary, _recordedBefore,
                 PluginConfiguration.DefaultWatchedSymbol, PluginConfiguration.DefaultInLibrarySymbol, PluginConfiguration.DefaultRecordedBeforeSymbol
             }
+            .Concat(config.UsedSymbols ?? Array.Empty<string>())
+            .Where(sym => !string.IsNullOrEmpty(sym))
             .Distinct()
             .OrderByDescending(s => s.Length)
             .Select(Regex.Escape);
