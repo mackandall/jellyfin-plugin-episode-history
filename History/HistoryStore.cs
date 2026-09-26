@@ -278,6 +278,55 @@ public sealed class HistoryStore
         }
     }
 
+    /// <summary>Empties the history and the skipped-recordings list (restore in replace mode).</summary>
+    public void DeleteAll()
+    {
+        lock (_lock)
+        {
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "DELETE FROM history; DELETE FROM cancelled_timers;";
+            cmd.ExecuteNonQuery();
+            tx.Commit();
+        }
+    }
+
+    /// <summary>Adds skipped-recording records from a backup, keeping their dates; returns how many were new.</summary>
+    public int ImportCancelled(IEnumerable<CancelledTimer> timers)
+    {
+        lock (_lock)
+        {
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "INSERT OR IGNORE INTO cancelled_timers (timer_id, title, reason, cancelled_utc) VALUES ($id, $title, $reason, $utc)";
+            var pId = cmd.Parameters.Add("$id", SqliteType.Text);
+            var pTitle = cmd.Parameters.Add("$title", SqliteType.Text);
+            var pReason = cmd.Parameters.Add("$reason", SqliteType.Text);
+            var pUtc = cmd.Parameters.Add("$utc", SqliteType.Text);
+            int added = 0;
+            foreach (var t in timers)
+            {
+                if (string.IsNullOrEmpty(t?.TimerId))
+                {
+                    continue;
+                }
+
+                pId.Value = t.TimerId;
+                pTitle.Value = (object?)t.Title ?? DBNull.Value;
+                pReason.Value = t.Reason ?? "restored";
+                pUtc.Value = t.CancelledUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+                added += cmd.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+            return added;
+        }
+    }
+
     public List<CancelledTimer> RecentCancelled(int limit)
     {
         lock (_lock)

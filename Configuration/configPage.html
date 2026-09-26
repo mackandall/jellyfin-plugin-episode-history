@@ -99,6 +99,36 @@
                 </div>
 
                 <div class="verticalSection">
+                    <h2>Backup and restore</h2>
+                    <div class="fieldDescription">
+                        The history already survives plugin upgrades and reinstalls. A backup file is for rebuilding
+                        or moving the server: restoring maps watched history to users by name and re-links recordings
+                        found at the same file paths.
+                    </div>
+                    <button id="BackupBtn" type="button" is="emby-button" class="raised block">
+                        <span>Download backup</span>
+                    </button>
+                    <div class="inputContainer" style="margin-top:1em;">
+                        <label class="inputLabel inputLabelUnfocused" for="RestoreFile">Backup file to restore</label>
+                        <input id="RestoreFile" type="file" accept=".json,application/json" />
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="RestoreReplace" type="checkbox" is="emby-checkbox" />
+                            <span>Replace existing history</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Off: add what the backup has and this server doesn't, keeping everything already here.
+                            On: delete this server's history first.
+                        </div>
+                    </div>
+                    <button id="RestoreBtn" type="button" is="emby-button" class="raised block">
+                        <span>Restore from backup</span>
+                    </button>
+                    <div id="BackupResult" class="fieldDescription" style="margin-top:0.5em;white-space:pre-line;"></div>
+                </div>
+
+                <div class="verticalSection">
                     <h2>Recent history</h2>
                     <div id="Recent" class="fieldDescription" style="white-space:pre-line;"></div>
                 </div>
@@ -212,6 +242,73 @@
                         r.RowsAdded + " new rows. The guide is re-marked in a few seconds.";
                     showStatus();
                 }).catch(function () { out.textContent = "Import failed; see the server log."; });
+            });
+
+            document.querySelector("#BackupBtn").addEventListener("click", function () {
+                var out = document.querySelector("#BackupResult");
+                out.textContent = "Preparing backup...";
+                get("EpisodeHistory/Backup").then(function (data) {
+                    var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                    var a = document.createElement("a");
+                    a.href = URL.createObjectURL(blob);
+                    a.download = "episode-history-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(function () { URL.revokeObjectURL(a.href); }, 10000);
+                    out.textContent = "Backup downloaded: " + (data.History || []).length + " history rows, " +
+                        (data.CancelledTimers || []).length + " skipped recordings.";
+                }).catch(function () { out.textContent = "Backup failed; see the server log."; });
+            });
+
+            document.querySelector("#RestoreBtn").addEventListener("click", function () {
+                var out = document.querySelector("#BackupResult");
+                var input = document.querySelector("#RestoreFile");
+                var replace = document.querySelector("#RestoreReplace").checked;
+                if (!input.files || !input.files.length) {
+                    out.textContent = "Choose a backup file first.";
+                    return;
+                }
+                input.files[0].text().then(function (text) {
+                    var parsed;
+                    try {
+                        parsed = JSON.parse(text);
+                    } catch (e) {
+                        out.textContent = "That file isn't valid JSON.";
+                        return;
+                    }
+                    if (!parsed || !Array.isArray(parsed.History)) {
+                        out.textContent = "That file isn't an Episode History backup.";
+                        return;
+                    }
+                    if (replace && !window.confirm("Delete this server's episode history and replace it with the " +
+                            parsed.History.length + " rows in the backup?")) {
+                        return;
+                    }
+                    out.textContent = "Restoring...";
+                    ApiClient.ajax({
+                        type: "POST",
+                        url: ApiClient.getUrl("EpisodeHistory/Restore", { replace: replace }),
+                        data: text,
+                        contentType: "application/json",
+                        dataType: "json"
+                    }).then(function (r) {
+                        var lines = [
+                            "Restored (" + (r.Replaced ? "replaced" : "merged") + "): " + r.RowsAdded + " rows added, " +
+                                r.RowsAlreadyPresent + " already present, " + r.ItemsRelinkedByPath + " re-linked by file path.",
+                            r.CancelledTimersAdded + " skipped-recording records added."
+                        ];
+                        if (r.WatchedSkippedUnknownUser) {
+                            lines.push(r.WatchedSkippedUnknownUser + " watched rows skipped: no user named " +
+                                r.UnknownUsers.join(", ") + " on this server. Create the user(s) and restore again to add them.");
+                        }
+                        lines.push("The guide is re-marked in a few seconds.");
+                        out.textContent = lines.join("\n");
+                        showStatus();
+                    }).catch(function (err) {
+                        out.textContent = "Restore failed" + (err && err.status === 400 ? ": the file was rejected (wrong format or version)." : "; see the server log.");
+                    });
+                });
             });
 
             document.querySelector("#EpisodeHistoryConfigForm")

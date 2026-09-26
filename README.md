@@ -91,11 +91,29 @@ On first start the history is empty, so it is seeded from the library: recording
 startup. Dashboard → Plugins → Episode History shows counts, the last sweep, recent
 history and skipped recordings, with buttons to re-import or re-sweep.
 
+## Backup and restore
+
+The history lives in Jellyfin's data folder, so it already survives plugin upgrades and
+reinstalls. For rebuilding or moving the server, the settings page has **Download
+backup** (one JSON file with every history row and skipped recording) and **Restore from
+backup**:
+
+- **Merge** (default) adds what the backup has and the server doesn't, and keeps
+  everything already there. Restoring the same file twice changes nothing.
+- **Replace** deletes the server's history first. The file is checked before anything
+  is deleted.
+- Watched history is mapped to users by **name**, because user IDs differ between
+  servers. Rows for names with no matching user are skipped and reported; create the
+  user and restore again to add them.
+- Recordings are re-linked by **file path**, so a recording at the same path counts as
+  "in library" again after the restore.
+
 ## Files
 
 - History database: `<jellyfin data>/episode-history/history.db`
 - API (admin): `GET /EpisodeHistory/Status`, `GET /EpisodeHistory/Recent`,
-  `POST /EpisodeHistory/Sweep`, `POST /EpisodeHistory/Import`;
+  `POST /EpisodeHistory/Sweep`, `POST /EpisodeHistory/Import`,
+  `GET /EpisodeHistory/Backup`, `POST /EpisodeHistory/Restore?replace=false`;
   (any user) `GET /EpisodeHistory/Program/{programId}` shows what the history knows about
   one guide entry, including whether the caller marked it watched by hand;
   `POST` / `DELETE /EpisodeHistory/Program/{programId}/Watched` marks or unmarks the

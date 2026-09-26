@@ -26,9 +26,11 @@ public sealed class HistoryController : ControllerBase
     private readonly GuideSweeper _sweeper;
     private readonly LibraryImporter _importer;
     private readonly ILibraryManager _libraryManager;
+    private readonly BackupService _backup;
 
-    public HistoryController(HistoryStore store, GuideSweeper sweeper, LibraryImporter importer, ILibraryManager libraryManager)
+    public HistoryController(HistoryStore store, GuideSweeper sweeper, LibraryImporter importer, ILibraryManager libraryManager, BackupService backup)
     {
+        _backup = backup;
         _libraryManager = libraryManager;
         _store = store;
         _sweeper = sweeper;
@@ -79,6 +81,36 @@ public sealed class HistoryController : ControllerBase
         catch (GuideRefreshingException ex)
         {
             return Conflict(ex.Message);
+        }
+    }
+
+    /// <summary>The whole history as a JSON backup document (the settings page saves it as a file).</summary>
+    [HttpGet("Backup")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public ActionResult<BackupService.BackupFile> Backup()
+    {
+        return Ok(_backup.Export());
+    }
+
+    /// <summary>
+    /// Restores a backup made by <see cref="Backup"/>, on this server or another one. Merges
+    /// by default (adds what's missing, keeps everything already here); replace=true empties
+    /// the history first. The file is validated before anything is deleted.
+    /// </summary>
+    [HttpPost("Restore")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    [RequestSizeLimit(100_000_000)]
+    public ActionResult<BackupService.RestoreResult> Restore([FromBody] BackupService.BackupFile file, [FromQuery] bool replace = false)
+    {
+        try
+        {
+            var result = _backup.Restore(file, replace);
+            _sweeper.Request("history restored");
+            return Ok(result);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(ex.Message);
         }
     }
 
