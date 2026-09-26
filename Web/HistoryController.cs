@@ -169,6 +169,18 @@ public sealed class HistoryController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Guide entries whose marks changed since <paramref name="since"/> (the Version from a
+    /// previous call; omit it to get a baseline). Clients showing the guide poll this to
+    /// pick up marks made elsewhere without reloading. Reset = reload everything.
+    /// </summary>
+    [HttpGet("GuideChanges")]
+    [Authorize]
+    public ActionResult<GuideSweeper.GuideChanges> GuideChanges([FromQuery] long? since)
+    {
+        return Ok(_sweeper.GetChangesSince(since));
+    }
+
     private const string ManualSource = "manual";
 
     private List<HistoryStore.Row> ManualRows(Guid userId, EpisodeIdentity identity) =>

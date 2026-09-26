@@ -5,7 +5,9 @@
  * "Mark played" for guide programs (its canMarkPlayed() returns false for Type
  * "Program"), so this adds its own button to the program dialog, backed by the plugin's
  * POST/DELETE /EpisodeHistory/Program/{id}/Watched. Every airing of that episode then
- * carries the watched mark in the guide, in every client.
+ * carries the watched mark in the guide, in every client. While a guide is on screen it
+ * also polls /EpisodeHistory/GuideChanges every 30 s, so marks made anywhere else appear
+ * without reloading the page.
  *
  * VERSION-SENSITIVE FILE — built against this server's jellyfin-web 12.0.0. Confirmed
  * live via DOM inspection on 2026-09-26:
@@ -87,7 +89,7 @@
         .then(function () {
           setButton(button, mark);
           // The plugin re-marks the guide ~1 s later and takes a few seconds.
-          setTimeout(function () { refreshCells(programId); }, 6000);
+          setTimeout(pollChanges, 6000);
         })
         .catch(function () {
           log('marking program ' + programId + ' failed');
@@ -101,36 +103,102 @@
   }
 
   /*
-   * The guide grid doesn't reload by itself, so refresh the visible cells of the same
-   * show (the marked airing plus any repeats on screen) with their new episode titles.
-   * Other shows are unaffected by a mark, so they don't need fetching.
+   * The guide grid doesn't reload by itself, so marks made elsewhere (Wholphin, another
+   * browser, a finished recording) wouldn't show until a page refresh. While a guide is on
+   * screen, ask the plugin every 30 s which guide entries it re-titled since last time and
+   * update just those cells. Also run 6 s after this page's own mark/unmark.
    */
-  function refreshCells(programId) {
-    var clicked = document.querySelector('.programCell[data-id="' + programId + '"]');
-    var nameEl = clicked && clicked.querySelector('.guideProgramNameText');
-    var showName = nameEl && nameEl.firstChild ? nameEl.firstChild.textContent.trim() : null;
-    var cells = [].slice.call(document.querySelectorAll('.programCell[data-id]')).filter(function (c) {
-      var n = c.querySelector('.guideProgramNameText');
-      return c === clicked || (showName && n && n.firstChild && n.firstChild.textContent.trim() === showName);
-    });
-    if (!cells.length) {
+  var POLL_MS = 30000;
+  var changesVersion = null;
+  var polling = false;
+
+  function pollChanges() {
+    var apiClient = window.ApiClient;
+    if (polling || !apiClient || !apiClient.getCurrentUserId || !apiClient.getCurrentUserId()) {
       return;
     }
 
-    var ids = cells.map(function (c) { return c.getAttribute('data-id'); });
-    var apiClient = window.ApiClient;
-    apiClient.getItems(apiClient.getCurrentUserId(), { Ids: ids.join(','), EnableImages: false })
-      .then(function (result) {
-        (result.Items || []).forEach(function (item) {
-          var cell = document.querySelector('.programCell[data-id="' + item.Id + '"]');
-          var secondary = cell && cell.querySelector('.programSecondaryTitle');
-          if (secondary && item.EpisodeTitle) {
-            secondary.textContent = item.EpisodeTitle;
-          }
-        });
+    // The baseline is taken as soon as someone is signed in, guide or not, so a mark made
+    // elsewhere right after the guide opens isn't missed; after that, only poll while a
+    // guide is actually on screen.
+    if (changesVersion !== null && !document.querySelector('.programCell[data-id]')) {
+      return;
+    }
+
+    polling = true;
+    var path = 'EpisodeHistory/GuideChanges' + (changesVersion === null ? '' : '?since=' + changesVersion);
+    api('GET', path)
+      .then(function (r) {
+        var first = changesVersion === null;
+        changesVersion = r.Version;
+        if (first) {
+          return null;
+        }
+
+        // Reset (server restarted, or too far behind): refresh every visible cell.
+        var ids = r.Reset
+          ? [].slice.call(document.querySelectorAll('.programCell[data-id]')).map(function (c) { return c.getAttribute('data-id'); })
+          : (r.ProgramIds || []).filter(function (id) { return document.querySelector('.programCell[data-id="' + id + '"]'); });
+        return ids.length ? updateCells(ids) : null;
       })
-      .catch(function () { log('refreshing guide cells failed'); });
+      .catch(function () { log('polling guide changes failed'); })
+      .then(function () { polling = false; });
   }
+
+  function updateCells(ids) {
+    var apiClient = window.ApiClient;
+    var batches = [];
+    for (var i = 0; i < ids.length; i += 100) {
+      batches.push(ids.slice(i, i + 100));
+    }
+
+    return Promise.all(batches.map(function (batch) {
+      return apiClient.getItems(apiClient.getCurrentUserId(), { Ids: batch.join(','), EnableImages: false })
+        .then(function (result) {
+          (result.Items || []).forEach(function (item) {
+            var cell = document.querySelector('.programCell[data-id="' + item.Id + '"]');
+            if (cell) {
+              setSecondaryTitle(cell, item.EpisodeTitle);
+            }
+          });
+        });
+    }));
+  }
+
+  // Same markup jellyfin-web's guide uses for the episode-title line; a program that had
+  // no episode title (e.g. a movie) doesn't have the element yet.
+  function setSecondaryTitle(cell, title) {
+    var secondary = cell.querySelector('.programSecondaryTitle');
+    if (!title) {
+      var info = cell.querySelector('.guideProgramSecondaryInfo');
+      if (info) {
+        info.parentNode.removeChild(info);
+      }
+      return;
+    }
+
+    if (!secondary) {
+      var nameText = cell.querySelector('.guideProgramNameText');
+      if (!nameText) {
+        return;
+      }
+      var infoDiv = document.createElement('div');
+      infoDiv.className = 'guideProgramSecondaryInfo';
+      secondary = document.createElement('span');
+      secondary.className = 'programSecondaryTitle';
+      infoDiv.appendChild(secondary);
+      nameText.appendChild(infoDiv);
+    }
+
+    secondary.textContent = title;
+  }
+
+  setInterval(function () {
+    if (!document.hidden) {
+      pollChanges();
+    }
+  }, POLL_MS);
+  setTimeout(pollChanges, 3000);
 
   function tryInject(fields) {
     var programId = lastProgramId;

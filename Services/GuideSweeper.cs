@@ -90,6 +90,61 @@ public sealed class GuideSweeper : IHostedService, IDisposable
 
     public SweepResult? LastSweep { get; private set; }
 
+    /*
+     * Change feed for clients that keep the guide on screen (jellyfin-web script,
+     * Wholphin): every guide entry a sweep re-titles gets the next version number, and a
+     * client polls "what changed since version N?" instead of reloading the whole guide.
+     * Kept in memory only; a client that asks for a version older than what's retained (or
+     * from before a server restart) is told to reload everything.
+     */
+    private const int MaxChanges = 20000;
+    private readonly object _changesLock = new();
+    private readonly LinkedList<(long Version, Guid ProgramId)> _changes = new();
+    private long _version;
+
+    public sealed record GuideChanges(long Version, bool Reset, IReadOnlyList<Guid> ProgramIds);
+
+    /// <summary>
+    /// Guide entries re-titled since <paramref name="since"/> (a Version from an earlier
+    /// call). Null <paramref name="since"/> just returns the current version, as a baseline.
+    /// </summary>
+    public GuideChanges GetChangesSince(long? since)
+    {
+        lock (_changesLock)
+        {
+            if (since is null || since.Value == _version)
+            {
+                return new GuideChanges(_version, false, Array.Empty<Guid>());
+            }
+
+            // Asked about versions no longer retained, or from a previous server run.
+            var oldest = _changes.First?.Value.Version ?? _version + 1;
+            if (since.Value > _version || since.Value < oldest - 1)
+            {
+                return new GuideChanges(_version, true, Array.Empty<Guid>());
+            }
+
+            var ids = _changes.Where(c => c.Version > since.Value).Select(c => c.ProgramId).Distinct().ToList();
+            return new GuideChanges(_version, false, ids);
+        }
+    }
+
+    private void RecordChanges(IEnumerable<Guid> programIds)
+    {
+        lock (_changesLock)
+        {
+            foreach (var id in programIds)
+            {
+                _changes.AddLast((++_version, id));
+            }
+
+            while (_changes.Count > MaxChanges)
+            {
+                _changes.RemoveFirst();
+            }
+        }
+    }
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _liveTvManager.TimerCreated += OnTimerChanged;
@@ -282,6 +337,8 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             var parent = _libraryManager.GetItemById(group.Key) ?? group.First().GetParent();
             await _libraryManager.UpdateItemsAsync(group.ToList<BaseItem>(), parent, ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
         }
+
+        RecordChanges(changed.Select(p => p.Id));
 
         // 3. Timers that copied a marked title: make them re-copy the clean one.
         int fixedTimers = 0;
