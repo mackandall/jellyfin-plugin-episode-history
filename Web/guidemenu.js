@@ -6,7 +6,7 @@
  * "Program"), so this adds its own button to the program dialog, backed by the plugin's
  * POST/DELETE /EpisodeHistory/Program/{id}/Watched. Every airing of that episode then
  * carries the watched mark in the guide, in every client. While a guide is on screen it
- * also polls /EpisodeHistory/GuideChanges every 30 s, so marks made anywhere else appear
+ * also polls /EpisodeHistory/GuideChanges every 5 s, so marks made anywhere else appear
  * without reloading the page.
  *
  * VERSION-SENSITIVE FILE — built against this server's jellyfin-web 12.0.0. Confirmed
@@ -105,10 +105,10 @@
   /*
    * The guide grid doesn't reload by itself, so marks made elsewhere (Wholphin, another
    * browser, a finished recording) wouldn't show until a page refresh. While a guide is on
-   * screen, ask the plugin every 30 s which guide entries it re-titled since last time and
+   * screen, ask the plugin every 5 s which guide entries it re-titled since last time and
    * update just those cells. Also run 6 s after this page's own mark/unmark.
    */
-  var POLL_MS = 30000;
+  var POLL_MS = 5000;
   var changesVersion = null;
   var polling = false;
 
