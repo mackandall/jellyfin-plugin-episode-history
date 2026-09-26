@@ -189,6 +189,39 @@ public sealed class HistoryStore
 
     public List<Row> LoadAll() => Query("SELECT * FROM history ORDER BY id", null);
 
+    /// <summary>A user's watched rows from one source (e.g. "manual").</summary>
+    public List<Row> LoadWatched(Guid userId, string source) =>
+        Query(
+            "SELECT * FROM history WHERE kind = $kind AND user_id = $user AND source = $source ORDER BY id",
+            cmd =>
+            {
+                cmd.Parameters.AddWithValue("$kind", KindWatched);
+                cmd.Parameters.AddWithValue("$user", UserKey(userId));
+                cmd.Parameters.AddWithValue("$source", source);
+            });
+
+    public int DeleteRows(IEnumerable<long> ids)
+    {
+        lock (_lock)
+        {
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "DELETE FROM history WHERE id = $id";
+            var p = cmd.Parameters.Add("$id", SqliteType.Integer);
+            int deleted = 0;
+            foreach (var id in ids)
+            {
+                p.Value = id;
+                deleted += cmd.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+            return deleted;
+        }
+    }
+
     public List<Row> Recent(int limit) =>
         Query("SELECT * FROM history ORDER BY event_utc DESC, id DESC LIMIT $limit", cmd => cmd.Parameters.AddWithValue("$limit", limit));
 

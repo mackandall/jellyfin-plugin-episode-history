@@ -73,6 +73,21 @@ public sealed record EpisodeIdentity(
         }
     }
 
+    /// <summary>
+    /// Whether two identities are the same episode, by the same rule the guide marks use:
+    /// programme ids decide when both have one, otherwise any shared name key.
+    /// </summary>
+    public bool SameEpisode(EpisodeIdentity other)
+    {
+        if (ValidProgramId is { } a && other.ValidProgramId is { } b)
+        {
+            return string.Equals(a, b, StringComparison.Ordinal);
+        }
+
+        var keys = new HashSet<string>(NameKeys(), StringComparer.Ordinal);
+        return other.NameKeys().Any(keys.Contains);
+    }
+
     private static void AddName(List<string> names, string? raw)
     {
         var n = Normalize(raw);

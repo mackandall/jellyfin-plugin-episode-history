@@ -86,4 +86,8 @@ history and skipped recordings, with buttons to re-import or re-sweep.
 - API (admin): `GET /EpisodeHistory/Status`, `GET /EpisodeHistory/Recent`,
   `POST /EpisodeHistory/Sweep`, `POST /EpisodeHistory/Import`;
   (any user) `GET /EpisodeHistory/Program/{programId}` shows what the history knows about
-  one guide entry.
+  one guide entry, including whether the caller marked it watched by hand;
+  `POST` / `DELETE /EpisodeHistory/Program/{programId}/Watched` marks or unmarks the
+  episode that entry airs as watched by the caller (for something seen elsewhere). Every
+  airing of that episode then gets the watched mark. The Wholphin fork's guide dialog
+  offers this as "Mark as watched".

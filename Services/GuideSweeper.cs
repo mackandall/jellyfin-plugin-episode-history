@@ -123,10 +123,16 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     }
 
     /// <summary>Schedules a sweep; bursts of requests collapse into one.</summary>
-    public void Request(string reason)
+    public void Request(string reason) => Request(reason, Debounce);
+
+    /// <summary>
+    /// Schedules a sweep after <paramref name="delay"/>, for requests where someone is
+    /// looking at the guide (a menu's "mark as watched") and the usual debounce would feel slow.
+    /// </summary>
+    public void Request(string reason, TimeSpan delay)
     {
         _pendingReason = reason;
-        _debounce.Change(Debounce, Timeout.InfiniteTimeSpan);
+        _debounce.Change(delay, Timeout.InfiniteTimeSpan);
     }
 
     private void OnTimerChanged(object? sender, EventArgs e) => Request("schedule changed");

@@ -1,16 +1,23 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.EpisodeHistory.Configuration;
 using Jellyfin.Plugin.EpisodeHistory.History;
 using Jellyfin.Plugin.EpisodeHistory.Services;
 using MediaBrowser.Common.Api;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Jellyfin.Plugin.EpisodeHistory.Web;
 
-/// <summary>Status and manual controls for the settings page, plus a per-programme lookup.</summary>
+/// <summary>
+/// Status and manual controls for the settings page, a per-programme lookup, and the
+/// "mark as watched" calls client menus use for guide entries.
+/// </summary>
 [ApiController]
 [Route("EpisodeHistory")]
 public sealed class HistoryController : ControllerBase
@@ -18,9 +25,11 @@ public sealed class HistoryController : ControllerBase
     private readonly HistoryStore _store;
     private readonly GuideSweeper _sweeper;
     private readonly LibraryImporter _importer;
+    private readonly ILibraryManager _libraryManager;
 
-    public HistoryController(HistoryStore store, GuideSweeper sweeper, LibraryImporter importer)
+    public HistoryController(HistoryStore store, GuideSweeper sweeper, LibraryImporter importer, ILibraryManager libraryManager)
     {
+        _libraryManager = libraryManager;
         _store = store;
         _sweeper = sweeper;
         _importer = importer;
@@ -82,13 +91,94 @@ public sealed class HistoryController : ControllerBase
         return Ok(result);
     }
 
-    /// <summary>What the history knows about one guide entry (internal programme id).</summary>
+    /// <summary>
+    /// What the history knows about one guide entry (internal programme id), plus whether the
+    /// calling user has marked it watched by hand (so a client can offer "Unmark").
+    /// </summary>
     [HttpGet("Program/{programId}")]
     [Authorize]
     public IActionResult Program([FromRoute] Guid programId)
     {
-        return _sweeper.Lookup(programId) is { } found
-            ? Ok(new { found.Identity, found.Identity.ValidProgramId, found.State })
-            : NotFound();
+        if (_sweeper.Lookup(programId) is not { } found)
+        {
+            return NotFound();
+        }
+
+        var userId = CurrentUserId();
+        var markedWatched = userId != Guid.Empty && ManualRows(userId, found.Identity).Count > 0;
+        return Ok(new { found.Identity, found.Identity.ValidProgramId, found.State, MarkedWatched = markedWatched });
     }
+
+    /// <summary>
+    /// Marks the episode (or movie) a guide entry airs as watched by the calling user, for
+    /// something seen outside this server. Stored like a played item, so every airing of that
+    /// episode gets the watched mark.
+    /// </summary>
+    [HttpPost("Program/{programId}/Watched")]
+    [Authorize]
+    public IActionResult MarkWatched([FromRoute] Guid programId)
+    {
+        var userId = CurrentUserId();
+        if (userId == Guid.Empty)
+        {
+            return Unauthorized();
+        }
+
+        if (_libraryManager.GetItemById(programId) is not LiveTvProgram program)
+        {
+            return NotFound();
+        }
+
+        var identity = EpisodeIdentity.FromProgram(program, Marker());
+        if (identity.ValidProgramId is null && !identity.NameKeys().Any())
+        {
+            return BadRequest("This guide entry has no program id, episode numbers or title to remember it by.");
+        }
+
+        if (ManualRows(userId, identity).Count == 0)
+        {
+            _store.Upsert(HistoryStore.KindWatched, userId, programId, identity, ManualSource, DateTime.UtcNow);
+            _sweeper.Request("marked watched", TimeSpan.FromSeconds(1));
+        }
+
+        return NoContent();
+    }
+
+    /// <summary>Removes the calling user's hand-made watched mark for that episode, from any airing.</summary>
+    [HttpDelete("Program/{programId}/Watched")]
+    [Authorize]
+    public IActionResult UnmarkWatched([FromRoute] Guid programId)
+    {
+        var userId = CurrentUserId();
+        if (userId == Guid.Empty)
+        {
+            return Unauthorized();
+        }
+
+        if (_libraryManager.GetItemById(programId) is not LiveTvProgram program)
+        {
+            return NotFound();
+        }
+
+        var rows = ManualRows(userId, EpisodeIdentity.FromProgram(program, Marker()));
+        if (_store.DeleteRows(rows.Select(r => r.Id)) > 0)
+        {
+            _sweeper.Request("unmarked watched", TimeSpan.FromSeconds(1));
+        }
+
+        return NoContent();
+    }
+
+    private const string ManualSource = "manual";
+
+    private List<HistoryStore.Row> ManualRows(Guid userId, EpisodeIdentity identity) =>
+        _store.LoadWatched(userId, ManualSource).Where(r => r.Identity.SameEpisode(identity)).ToList();
+
+    // The id Jellyfin's auth handler puts on every authenticated request (its own
+    // ClaimsPrincipal.GetUserId reads the same claim; that helper lives in Jellyfin.Api,
+    // which plugins shouldn't reference).
+    private Guid CurrentUserId() =>
+        Guid.TryParse(User.FindFirst("Jellyfin-UserId")?.Value, out var id) ? id : Guid.Empty;
+
+    private static GuideMarker Marker() => new(Plugin.Instance?.Configuration ?? new PluginConfiguration());
 }
