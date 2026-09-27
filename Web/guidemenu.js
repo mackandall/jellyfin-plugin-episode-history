@@ -29,6 +29,8 @@
 
   var ROW_CLASS = 'episodeHistoryWatchedRow';
   var FORGET_ROW_CLASS = 'episodeHistoryForgetRow';
+  var PLAY_ROW_CLASS = 'episodeHistoryPlayRow';
+  var PLAY_KEY = 'episodeHistoryPlayItem';
   var lastProgramId = null;
 
   function log(msg) {
@@ -165,6 +167,47 @@
     } else if (existing && !used) {
       // A used row stays, showing its "Forgotten" result.
       existing.parentNode.removeChild(existing);
+    }
+  }
+
+  /*
+   * The web client exposes no player API to scripts, so "Play from library" opens the item's
+   * page and presses its Resume/Play button there (see playIfAsked).
+   */
+  function buildPlayRow(itemId, resume) {
+    var row = buttonRow(PLAY_ROW_CLASS);
+    var button = row.querySelector('button');
+    button.querySelector('.recordingIcon').className = 'material-icons recordingIcon play_circle';
+    button.querySelector('.buttonText').textContent = resume ? 'Resume from library' : 'Play from library';
+    button.addEventListener('click', function () {
+      try {
+        window.sessionStorage.setItem(PLAY_KEY, itemId);
+      } catch (e) {
+        // Private mode: the page opens without auto-play.
+      }
+      window.location.hash = '#/details?id=' + itemId;
+    });
+    return row;
+  }
+
+  function playIfAsked() {
+    var wanted = null;
+    try {
+      wanted = window.sessionStorage.getItem(PLAY_KEY);
+    } catch (e) {
+      return;
+    }
+    var hash = window.location.hash || '';
+    if (!wanted || hash.indexOf('#/details') !== 0 ||
+      new URLSearchParams(hash.slice(hash.indexOf('?') + 1)).get('id') !== wanted) {
+      return;
+    }
+    var button = [].slice.call(document.querySelectorAll('.btnPlay')).filter(function (b) {
+      return b.offsetParent !== null && !b.classList.contains('hide');
+    })[0];
+    if (button) {
+      window.sessionStorage.removeItem(PLAY_KEY);
+      button.click();
     }
   }
 
@@ -385,6 +428,11 @@
         if (!fields.isConnected || fields.querySelector('.' + ROW_CLASS)) {
           return;
         }
+        // "Play from library": the guide entry is already in the library, so offer to play
+        // that copy instead of watching the airing live.
+        if (info && info.LibraryItemId && !fields.querySelector('.' + PLAY_ROW_CLASS)) {
+          fields.appendChild(buildPlayRow(info.LibraryItemId, info.LibraryItemPositionTicks > 0));
+        }
         fields.appendChild(buildRow(programId, !!(info && info.MarkedWatched)));
         showForgetRow(fields, programId, !!(info && info.CanForget));
       })
@@ -406,6 +454,7 @@
     if (fields) {
       tryInject(fields);
     }
+    playIfAsked();
 
     // jellyfin-web re-renders guide cells when scrolling or changing day; tag new ones.
     if (markRegex) {

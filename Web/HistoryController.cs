@@ -8,6 +8,8 @@ using Jellyfin.Plugin.EpisodeHistory.History;
 using Jellyfin.Plugin.EpisodeHistory.Services;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.MediaSegments;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.LiveTv;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -27,9 +29,23 @@ public sealed class HistoryController : ControllerBase
     private readonly LibraryImporter _importer;
     private readonly ILibraryManager _libraryManager;
     private readonly BackupService _backup;
+    private readonly IUserManager _userManager;
+    private readonly IUserDataManager _userDataManager;
+    private readonly IMediaSegmentManager _segments;
 
-    public HistoryController(HistoryStore store, GuideSweeper sweeper, LibraryImporter importer, ILibraryManager libraryManager, BackupService backup)
+    public HistoryController(
+        HistoryStore store,
+        GuideSweeper sweeper,
+        LibraryImporter importer,
+        ILibraryManager libraryManager,
+        BackupService backup,
+        IUserManager userManager,
+        IUserDataManager userDataManager,
+        IMediaSegmentManager segments)
     {
+        _userManager = userManager;
+        _userDataManager = userDataManager;
+        _segments = segments;
         _backup = backup;
         _libraryManager = libraryManager;
         _store = store;
@@ -139,7 +155,46 @@ public sealed class HistoryController : ControllerBase
         var userId = CurrentUserId();
         var markedWatched = userId != Guid.Empty && ManualRows(userId, found.Identity).Count > 0;
         var canForget = User.IsInRole("Administrator") && ForgettableRows(found.Identity).Count > 0;
-        return Ok(new { found.Identity, found.Identity.ValidProgramId, found.State, MarkedWatched = markedWatched, CanForget = canForget });
+        var copy = BestLibraryCopy(found.LibraryItems, userId);
+        return Ok(new
+        {
+            found.Identity,
+            found.Identity.ValidProgramId,
+            found.State,
+            MarkedWatched = markedWatched,
+            CanForget = canForget,
+            // "Play from library": the copy of this episode/movie the user can play, and where
+            // they left off in it.
+            LibraryItemId = copy?.Item.Id.ToString("N"),
+            LibraryItemPositionTicks = copy?.PositionTicks ?? 0
+        });
+    }
+
+    /// <summary>
+    /// Of the library items matching a guide entry, the one to play: visible to the user,
+    /// preferring a copy with media segments (commercial breaks marked), then the newest.
+    /// </summary>
+    private (BaseItem Item, long PositionTicks)? BestLibraryCopy(IReadOnlyList<Guid> itemIds, Guid userId)
+    {
+        var user = userId == Guid.Empty ? null : _userManager.GetUserById(userId);
+        if (user is null || itemIds.Count == 0)
+        {
+            return null;
+        }
+
+        var best = itemIds
+            .Select(id => _libraryManager.GetItemById(id))
+            .OfType<Video>()
+            .Where(item => item.IsVisible(user))
+            .OrderByDescending(item => _segments.HasSegments(item.Id))
+            .ThenByDescending(item => item.DateCreated)
+            .FirstOrDefault();
+        if (best is null)
+        {
+            return null;
+        }
+
+        return (best, _userDataManager.GetUserData(user, best)?.PlaybackPositionTicks ?? 0);
     }
 
     /// <summary>

@@ -475,8 +475,9 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             var minTicks = TimeSpan.FromMinutes(cfg.MinRecordingMinutes).Ticks;
             index.AddLibraryItems(items
                 .Where(i => i.RunTimeTicks is not > 0 || i.RunTimeTicks >= minTicks)
-                .Select(i => EpisodeIdentity.FromLibraryItem(i, marker, null))
-                .OfType<EpisodeIdentity>());
+                .Select(i => (i.Id, Identity: EpisodeIdentity.FromLibraryItem(i, marker, null)))
+                .Where(x => x.Identity is not null)
+                .Select(x => (x.Id, x.Identity!)));
         }
 
         return index;
@@ -507,7 +508,9 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         Guid.TryParse(id, out var guid) ? _libraryManager.GetItemById(guid) as LiveTvProgram : null;
 
     /// <summary>What the history says about one guide entry (for the API / debugging).</summary>
-    public (EpisodeIdentity Identity, HistoryState State)? Lookup(Guid programId)
+    /// <returns>The entry's identity, its marks, and the existing library items that make it
+    /// "in library" (for "Play from library").</returns>
+    public (EpisodeIdentity Identity, HistoryState State, IReadOnlyList<Guid> LibraryItems)? Lookup(Guid programId)
     {
         if (_libraryManager.GetItemById(programId) is not LiveTvProgram program)
         {
@@ -517,7 +520,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         var marker = new GuideMarker(Plugin.Instance?.Configuration ?? new PluginConfiguration());
         var identity = EpisodeIdentity.FromProgram(program, marker);
         var index = BuildIndex(Plugin.Instance?.Configuration ?? new PluginConfiguration(), marker);
-        return (identity, index.Evaluate(identity));
+        return (identity, index.Evaluate(identity), index.LibraryItems(identity));
     }
 }
 

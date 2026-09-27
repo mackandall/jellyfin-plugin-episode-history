@@ -19,7 +19,10 @@ public sealed class HistoryIndex
 
     private const string LibraryKind = "library";
 
-    private sealed record Entry(string Kind, bool HasProgramId, bool ItemExists);
+    /// <param name="ItemId">The library item this entry stands for, when it still exists (an
+    /// existing recording, or a "count all libraries" item); null for watched rows and
+    /// deleted recordings.</param>
+    private sealed record Entry(string Kind, bool HasProgramId, bool ItemExists, Guid? ItemId = null);
 
     /// <param name="rows">Every history row.</param>
     /// <param name="itemExists">Whether a library item id still exists.</param>
@@ -38,7 +41,7 @@ public sealed class HistoryIndex
             }
 
             var pid = row.Identity.ValidProgramId;
-            var entry = new Entry(row.Kind, pid is not null, exists);
+            var entry = new Entry(row.Kind, pid is not null, exists, exists ? row.ItemId : null);
             if (pid is not null)
             {
                 Add(_byProgramId, pid, entry);
@@ -55,11 +58,11 @@ public sealed class HistoryIndex
     /// Adds library items that aren't DVR recordings (the "count all libraries" setting).
     /// They count as in library and have no programme id, so they match by name keys.
     /// </summary>
-    public void AddLibraryItems(IEnumerable<EpisodeIdentity> identities)
+    public void AddLibraryItems(IEnumerable<(Guid ItemId, EpisodeIdentity Identity)> items)
     {
-        var entry = new Entry(LibraryKind, false, true);
-        foreach (var identity in identities)
+        foreach (var (itemId, identity) in items)
         {
+            var entry = new Entry(LibraryKind, false, true, itemId);
             foreach (var key in identity.NameKeys())
             {
                 Add(_byNameKey, key, entry);
@@ -74,8 +77,7 @@ public sealed class HistoryIndex
     public HistoryState Evaluate(EpisodeIdentity identity)
     {
         bool watched = false, inLibrary = false, recordedBefore = false;
-
-        void Apply(Entry e)
+        foreach (var e in Matches(identity))
         {
             if (e.Kind == HistoryStore.KindWatched)
             {
@@ -91,12 +93,36 @@ public sealed class HistoryIndex
             }
         }
 
+        return new HistoryState(watched, inLibrary, recordedBefore && !inLibrary);
+    }
+
+    /// <summary>
+    /// The existing library items behind an "in library" mark (recordings still present, or
+    /// items from any library with "count all libraries"), by the same matching as
+    /// <see cref="Evaluate"/>: what "Play from library" in the guide can open.
+    /// </summary>
+    public IReadOnlyList<Guid> LibraryItems(EpisodeIdentity identity)
+    {
+        var ids = new List<Guid>();
+        foreach (var e in Matches(identity))
+        {
+            if (e.ItemExists && e.ItemId is { } id && !ids.Contains(id))
+            {
+                ids.Add(id);
+            }
+        }
+
+        return ids;
+    }
+
+    private IEnumerable<Entry> Matches(EpisodeIdentity identity)
+    {
         var pid = identity.ValidProgramId;
         if (pid is not null && _byProgramId.TryGetValue(pid, out var byId))
         {
             foreach (var e in byId)
             {
-                Apply(e);
+                yield return e;
             }
         }
 
@@ -115,11 +141,9 @@ public sealed class HistoryIndex
                     continue;
                 }
 
-                Apply(e);
+                yield return e;
             }
         }
-
-        return new HistoryState(watched, inLibrary, recordedBefore && !inLibrary);
     }
 
     private static void Add(Dictionary<string, List<Entry>> map, string key, Entry entry)
