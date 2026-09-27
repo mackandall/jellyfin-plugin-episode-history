@@ -456,6 +456,88 @@
   }
 
   /*
+   * A program opened from a channel's page (its "upcoming" list) shows as a details page
+   * rather than the guide dialog, so offer "Play from library" among that page's buttons too.
+   * Looked up once per program id; items that aren't programs just 404.
+   */
+  var DETAIL_BUTTON_CLASS = 'btnEpisodeHistoryPlayLibrary';
+  var detailInfo = {};
+  function currentDetailsId() {
+    var hash = window.location.hash || '';
+    if (hash.indexOf('#/details') !== 0) {
+      return null;
+    }
+    return new URLSearchParams(hash.slice(hash.indexOf('?') + 1)).get('id');
+  }
+
+  function buildDetailButton(programId, itemId, resume) {
+    var button = document.createElement('button');
+    button.setAttribute('is', 'emby-button');
+    button.type = 'button';
+    button.className = 'button-flat detailButton emby-button ' + DETAIL_BUTTON_CLASS;
+    button.setAttribute('data-eh-program', programId);
+    var label = resume ? 'Resume from library' : 'Play from library';
+    button.title = label;
+    button.innerHTML = '<div class="detailButton-content"><span class="material-icons detailButton-icon play_circle" aria-hidden="true"></span></div>';
+    button.addEventListener('click', function () {
+      try {
+        window.sessionStorage.setItem(PLAY_KEY, itemId);
+      } catch (e) {
+        // Private mode: the page opens without auto-play.
+      }
+      window.location.hash = '#/details?id=' + itemId;
+    });
+    return button;
+  }
+
+  function checkDetailsPage() {
+    var id = currentDetailsId();
+    var page = document.querySelector('.page:not(.hide)');
+    if (!page) {
+      return;
+    }
+    // jellyfin-web reuses the page for the next item; drop buttons left from another one.
+    [].slice.call(page.querySelectorAll('.' + DETAIL_BUTTON_CLASS + ', .' + PLAY_ROW_CLASS)).forEach(function (el) {
+      if (el.getAttribute('data-eh-program') !== id) {
+        el.remove();
+      }
+    });
+    if (!id) {
+      return;
+    }
+    if (!(id in detailInfo)) {
+      detailInfo[id] = 'pending';
+      api('GET', 'EpisodeHistory/Program/' + id)
+        .then(function (info) { detailInfo[id] = info || null; scheduleCheck(); })
+        .catch(function () { detailInfo[id] = null; });
+      return;
+    }
+    var info = detailInfo[id];
+    if (!info || info === 'pending' || !info.LibraryItemId) {
+      return;
+    }
+    var resume = info.LibraryItemPositionTicks > 0;
+
+    // Airing now: the page shows its icon button row (Play = watch live); join it.
+    var buttons = page.querySelector('.mainDetailButtons');
+    if (buttons && buttons.offsetParent !== null) {
+      if (!buttons.querySelector('.' + DETAIL_BUTTON_CLASS)) {
+        buttons.insertBefore(buildDetailButton(id, info.LibraryItemId, resume), buttons.firstChild);
+      }
+      return;
+    }
+    // Airing later: that row is hidden and only the Record button shows; add ours below it.
+    // (The first such row is the hidden "record series" one; take the visible one.)
+    var record = [].slice.call(page.querySelectorAll('.recordingFields-buttons:not(.' + PLAY_ROW_CLASS + ')'))
+      .filter(function (r) { return r.offsetParent !== null; })[0];
+    if (record && !page.querySelector('.' + PLAY_ROW_CLASS)) {
+      var row = buildPlayRow(info.LibraryItemId, resume);
+      row.setAttribute('data-eh-program', id);
+      record.parentNode.insertBefore(row, record.nextSibling);
+    }
+  }
+
+  /*
    * jellyfin-web inserts the dialog before giving it its classes and renders the Record
    * rows asynchronously, so inspecting added nodes misses it. Instead, after any DOM
    * change (at most once per animation frame) look for an open program dialog's button
@@ -468,6 +550,7 @@
     if (fields) {
       tryInject(fields);
     }
+    checkDetailsPage();
     playIfAsked();
 
     // jellyfin-web re-renders guide cells when scrolling or changing day; tag new ones.
