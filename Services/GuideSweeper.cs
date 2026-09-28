@@ -515,6 +515,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             var minTicks = TimeSpan.FromMinutes(cfg.MinRecordingMinutes).Ticks;
             index.AddLibraryItems(items
                 .Where(i => i.RunTimeTicks is not > 0 || i.RunTimeTicks >= minTicks)
+                .Where(i => !LiveBuffers.IsUnkeptBuffer(i)) // a live TV buffer isn't "having" the episode
                 .Select(i => (i.Id, Identity: EpisodeIdentity.FromLibraryItem(i, marker, null)))
                 .Where(x => x.Identity is not null)
                 .Select(x => (x.Id, x.Identity!)));

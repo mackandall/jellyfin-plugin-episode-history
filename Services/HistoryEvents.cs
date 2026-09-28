@@ -69,6 +69,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
     // Paths the DVR capture has finished with (counted or rejected), so their ItemAdded isn't
     // mistaken for a file copied in by hand. Pruned after a few hours.
     private readonly ConcurrentDictionary<string, DateTime> _dvrHandled = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _bufferNoted = new(StringComparer.Ordinal);
 
     // Files that appeared in a recordings folder, waiting out AddedDelay. Keyed by path.
     private readonly ConcurrentDictionary<string, (Guid ItemId, DateTime DueUtc)> _added = new(StringComparer.Ordinal);
@@ -337,6 +338,20 @@ public sealed class HistoryEvents : IHostedService, IDisposable
             _logger.LogInformation("Recording {Title} ended but its file/item is gone; not recorded in history", pending.Title);
             return true;
         }
+
+        // A JellyDVR Live buffer only counts once someone keeps it; until then keep waiting
+        // (deleted unkept, it ends up in the "gone" case above).
+        if (LiveBuffers.IsUnkeptBuffer(path) || LiveBuffers.IsUnkeptBuffer(item))
+        {
+            if (_bufferNoted.TryAdd(path, 0))
+            {
+                _logger.LogInformation("Recording {Title} is a live TV buffer; not recorded in history unless it's kept", pending.Title);
+            }
+
+            return false;
+        }
+
+        _bufferNoted.TryRemove(path, out _);
 
         // Measured from when the poll first saw it (within 30 s of the DVR starting) to when
         // it stopped, against the programme's scheduled length without padding.

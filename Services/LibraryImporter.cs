@@ -80,7 +80,8 @@ public sealed class LibraryImporter
         int recordings = 0, stubs = 0;
         foreach (var item in items)
         {
-            if (!identities.TryGetValue(item.Id, out var identity) || !RecordingFiles.IsUnder(item.Path, folders))
+            if (!identities.TryGetValue(item.Id, out var identity) || !RecordingFiles.IsUnder(item.Path, folders)
+                || LiveBuffers.IsUnkeptBuffer(item))
             {
                 continue;
             }

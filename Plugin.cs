@@ -27,6 +27,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     public static Plugin? Instance { get; private set; }
 
+    /// <summary>Jellyfin's data folder (for reading other JellyDVR plugins' shared files).</summary>
+    public string DataPath => ApplicationPaths.DataPath;
+
     public override string Name => "Episode History";
 
     public override string Description =>
