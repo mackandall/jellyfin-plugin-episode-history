@@ -51,6 +51,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     private readonly LibraryImporter _importer;
     private readonly ILogger<GuideSweeper> _logger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
+    private readonly HashSet<string> _disarmed = new(StringComparer.Ordinal);
     private readonly Timer _debounce;
     private readonly Timer _periodic;
     private volatile string _pendingReason = "startup";
@@ -297,11 +298,20 @@ public sealed class GuideSweeper : IHostedService, IDisposable
 
                 var title = HistoryEvents.Describe(program.Name, marker.Strip(program.EpisodeTitle));
                 await _liveTvManager.CancelTimer(timer.Id).ConfigureAwait(false);
+                await DisarmAsync(timer, cancellationToken).ConfigureAwait(false);
                 _store.AddCancelled(timer.Id, title, "episode already in library");
                 cancelledIds.Add(timer.Id);
                 cancelled.Add(title + " @ " + timer.StartDate.ToLocalTime().ToString("g", System.Globalization.CultureInfo.CurrentCulture));
                 _logger.LogInformation("Cancelled series recording of {Title} at {Start:u}: episode already in library", title, timer.StartDate);
             }
+        }
+
+        // Series episodes cancelled elsewhere (the web/TV clients, or Jellyfin's own series
+        // refresh) have the same problem as the ones cancelled above.
+        foreach (var timer in timers.Where(t => t.Status == RecordingStatus.Cancelled
+            && !string.IsNullOrEmpty(t.SeriesTimerId) && t.StartDate > now && !_disarmed.Contains(t.Id)))
+        {
+            await DisarmAsync(timer, cancellationToken).ConfigureAwait(false);
         }
 
         var activeTimers = timers
@@ -408,6 +418,29 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             "{Updated} entries updated, {Cancelled} recordings cancelled, {Fixed} timers refreshed ({Ms} ms)",
             reason, programs.Count, watched, inLibrary, recordedBefore, changed.Count, cancelled.Count, fixedTimers, sw.ElapsedMilliseconds);
         return result;
+    }
+
+    /// <summary>
+    /// Makes a cancelled series episode really not record. Jellyfin 12 cancels a series
+    /// episode by flagging it Cancelled without stopping its in-memory start timer
+    /// (TimerManager.AddOrUpdate(timer, resetTimer: false)), and the fired handler never
+    /// checks the status, so the episode records anyway unless the server restarts first.
+    /// Saving the timer (UpdateTimer only copies its padding) goes through
+    /// TimerManager.Update, which stops the start timer and, seeing Cancelled, doesn't
+    /// restart it. Each timer id only needs this once per server run.
+    /// </summary>
+    private async Task DisarmAsync(TimerInfoDto timer, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _liveTvManager.UpdateTimer(timer, cancellationToken).ConfigureAwait(false);
+            _disarmed.Add(timer.Id);
+            _logger.LogInformation("Stopped the start timer of cancelled series recording {Name} at {Start:u}", timer.Name, timer.StartDate);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Couldn't stop the start timer of cancelled series recording {Name} at {Start:u}", timer.Name, timer.StartDate);
+        }
     }
 
     /// <summary>
