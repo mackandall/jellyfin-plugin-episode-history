@@ -32,6 +32,7 @@ public sealed class HistoryController : ControllerBase
     private readonly IUserManager _userManager;
     private readonly IUserDataManager _userDataManager;
     private readonly IMediaSegmentManager _segments;
+    private readonly RecordingsList _recordings;
 
     public HistoryController(
         HistoryStore store,
@@ -41,8 +42,10 @@ public sealed class HistoryController : ControllerBase
         BackupService backup,
         IUserManager userManager,
         IUserDataManager userDataManager,
-        IMediaSegmentManager segments)
+        IMediaSegmentManager segments,
+        RecordingsList recordings)
     {
+        _recordings = recordings;
         _userManager = userManager;
         _userDataManager = userDataManager;
         _segments = segments;
@@ -304,6 +307,47 @@ public sealed class HistoryController : ControllerBase
     /// The mark symbols currently put in front of guide titles, so the web guide script can
     /// tag marked cells with CSS classes (eh-watched, eh-inlibrary, eh-recordedbefore).
     /// </summary>
+    /// <summary>
+    /// The home screen's recordings row for the calling user: what the DVR recorded, newest
+    /// first, with the row's settings. <paramref name="filter"/> is "all", "current" (still in
+    /// the recordings folders) or "archived"; omitted, the configured default applies.
+    /// </summary>
+    [HttpGet("Recordings")]
+    [Authorize]
+    public IActionResult Recordings([FromQuery] string? filter, [FromQuery] int? limit)
+    {
+        var user = _userManager.GetUserById(CurrentUserId());
+        if (user is null)
+        {
+            return Unauthorized();
+        }
+
+        var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        filter = NormalizeFilter(filter) ?? NormalizeFilter(cfg.RecordingsRowDefaultFilter) ?? RecordingsList.FilterAll;
+        var settings = new
+        {
+            Enabled = cfg.RecordingsRowEnabled,
+            Title = cfg.RecordingsRowTitle,
+            Position = cfg.RecordingsRowPosition,
+            DefaultFilter = NormalizeFilter(cfg.RecordingsRowDefaultFilter) ?? RecordingsList.FilterAll
+        };
+        if (!cfg.RecordingsRowEnabled)
+        {
+            return Ok(new { Settings = settings, Filter = filter, Cards = Array.Empty<RecordingsList.Card>() });
+        }
+
+        var cards = _recordings.Cards(user, filter, cfg.RecordingsRowGroupByShow, cfg.RecordingsRowIncludeMovies, limit ?? cfg.RecordingsRowLimit);
+        return Ok(new { Settings = settings, Filter = filter, Cards = cards });
+    }
+
+    private static string? NormalizeFilter(string? filter) => filter?.Trim().ToLowerInvariant() switch
+    {
+        RecordingsList.FilterAll => RecordingsList.FilterAll,
+        RecordingsList.FilterCurrent => RecordingsList.FilterCurrent,
+        RecordingsList.FilterArchived => RecordingsList.FilterArchived,
+        _ => null
+    };
+
     [HttpGet("Symbols")]
     [Authorize]
     public IActionResult Symbols()

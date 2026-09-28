@@ -17,6 +17,7 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<HistoryStore>();
         serviceCollection.AddSingleton<LibraryImporter>();
         serviceCollection.AddSingleton<BackupService>();
+        serviceCollection.AddSingleton<RecordingsList>();
         serviceCollection.AddSingleton<GuideSweeper>();
         serviceCollection.AddHostedService(sp => sp.GetRequiredService<GuideSweeper>());
         serviceCollection.AddHostedService<HistoryEvents>();

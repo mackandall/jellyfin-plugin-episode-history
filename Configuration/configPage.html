@@ -80,6 +80,68 @@
                     </div>
                 </div>
 
+                <div class="verticalSection">
+                    <h2>Home screen recordings row</h2>
+                    <div class="fieldDescription">
+                        A row on the web client's home screen listing what the DVR recorded, newest first, like
+                        SageTV's Recordings view. Recordings moved to an archive folder (e.g. by JellyDVR Space)
+                        stay in it, marked archived; viewers switch between All, Current and Archived on the row.
+                    </div>
+
+                    <div class="checkboxContainer">
+                        <label>
+                            <input id="RecordingsRowEnabled" type="checkbox" is="emby-checkbox" />
+                            <span>Show the recordings row</span>
+                        </label>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RecordingsRowTitle">Row title</label>
+                        <input id="RecordingsRowTitle" type="text" is="emby-input" />
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="RecordingsRowPosition">Position</label>
+                        <select id="RecordingsRowPosition" is="emby-select">
+                            <option value="top">Top of the home screen</option>
+                            <option value="after-continue-watching">After Continue Watching</option>
+                            <option value="after-next-up">After Next Up</option>
+                            <option value="before-latest">Before the "Recently Added" rows</option>
+                            <option value="bottom">Bottom of the home screen</option>
+                        </select>
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="RecordingsRowDefaultFilter">Show at first</label>
+                        <select id="RecordingsRowDefaultFilter" is="emby-select">
+                            <option value="all">All recordings</option>
+                            <option value="current">Current (still in the recordings folders)</option>
+                            <option value="archived">Archived (moved to an archive folder)</option>
+                        </select>
+                        <div class="fieldDescription">Each viewer's own pick on the row is remembered in their browser.</div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="RecordingsRowGroupByShow" type="checkbox" is="emby-checkbox" />
+                            <span>One card per show</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">Off: one card per recording.</div>
+                    </div>
+
+                    <div class="checkboxContainer">
+                        <label>
+                            <input id="RecordingsRowIncludeMovies" type="checkbox" is="emby-checkbox" />
+                            <span>Include movie recordings</span>
+                        </label>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RecordingsRowLimit">Most cards in the row</label>
+                        <input id="RecordingsRowLimit" type="number" min="1" max="200" is="emby-input" />
+                    </div>
+                </div>
+
                 <div>
                     <button type="submit" is="emby-button" class="raised button-submit block">
                         <span>Save</span>
@@ -242,6 +304,13 @@
                         page.querySelector("#WatchedSymbol").value = config.WatchedSymbol || "";
                         page.querySelector("#InLibrarySymbol").value = config.InLibrarySymbol || "";
                         page.querySelector("#RecordedBeforeSymbol").value = config.RecordedBeforeSymbol || "";
+                        page.querySelector("#RecordingsRowEnabled").checked = config.RecordingsRowEnabled;
+                        page.querySelector("#RecordingsRowTitle").value = config.RecordingsRowTitle || "";
+                        page.querySelector("#RecordingsRowPosition").value = config.RecordingsRowPosition || "before-latest";
+                        page.querySelector("#RecordingsRowDefaultFilter").value = config.RecordingsRowDefaultFilter || "all";
+                        page.querySelector("#RecordingsRowGroupByShow").checked = config.RecordingsRowGroupByShow;
+                        page.querySelector("#RecordingsRowIncludeMovies").checked = config.RecordingsRowIncludeMovies;
+                        page.querySelector("#RecordingsRowLimit").value = config.RecordingsRowLimit;
                         Dashboard.hideLoadingMsg();
                     });
                     showStatus();
@@ -348,6 +417,13 @@
                         config.WatchedSymbol = page.querySelector("#WatchedSymbol").value;
                         config.InLibrarySymbol = page.querySelector("#InLibrarySymbol").value;
                         config.RecordedBeforeSymbol = page.querySelector("#RecordedBeforeSymbol").value;
+                        config.RecordingsRowEnabled = page.querySelector("#RecordingsRowEnabled").checked;
+                        config.RecordingsRowTitle = page.querySelector("#RecordingsRowTitle").value.trim() || "Recorded Shows";
+                        config.RecordingsRowPosition = page.querySelector("#RecordingsRowPosition").value;
+                        config.RecordingsRowDefaultFilter = page.querySelector("#RecordingsRowDefaultFilter").value;
+                        config.RecordingsRowGroupByShow = page.querySelector("#RecordingsRowGroupByShow").checked;
+                        config.RecordingsRowIncludeMovies = page.querySelector("#RecordingsRowIncludeMovies").checked;
+                        config.RecordingsRowLimit = parseInt(page.querySelector("#RecordingsRowLimit").value, 10) || 24;
                         ApiClient.updatePluginConfiguration(pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
                             // Apply new settings (e.g. marks turned off) to the guide right away.

@@ -49,6 +49,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     private readonly ITaskManager _taskManager;
     private readonly HistoryStore _store;
     private readonly LibraryImporter _importer;
+    private readonly RecordingsList _recordings;
     private readonly ILogger<GuideSweeper> _logger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private readonly HashSet<string> _disarmed = new(StringComparer.Ordinal);
@@ -63,8 +64,10 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         ITaskManager taskManager,
         HistoryStore store,
         LibraryImporter importer,
+        RecordingsList recordings,
         ILogger<GuideSweeper> logger)
     {
+        _recordings = recordings;
         _libraryManager = libraryManager;
         _liveTvManager = liveTvManager;
         _taskManager = taskManager;
@@ -271,6 +274,10 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     {
         var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
         RememberSymbols(cfg);
+
+        // Note new recordings' file names (and follow moved ones) before the index is built,
+        // so a recording moved to an archive folder still counts as in the library.
+        _recordings.Resolve();
         var marker = new GuideMarker(cfg);
         var index = BuildIndex(cfg, marker);
         var now = DateTime.UtcNow;

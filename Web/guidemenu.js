@@ -39,6 +39,15 @@
     }
   }
 
+  // The home screen's recordings row lives in its own file; load it from here so
+  // index.html only ever needs this one script tag.
+  (function loadRecordingsRow() {
+    var script = document.createElement('script');
+    script.defer = true;
+    script.src = '/EpisodeHistory/web/recordings.js';
+    document.head.appendChild(script);
+  })();
+
   // Remember which program the dialog about to open belongs to. Keyboard/remote "enter"
   // on a cell also arrives as a click event.
   document.addEventListener('click', function (e) {

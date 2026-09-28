@@ -83,7 +83,101 @@ public sealed class HistoryStore
                     cancelled_utc TEXT NOT NULL
                 );
                 """);
+
+            // Added later: the recording's file name, so a recording moved to an archive
+            // folder (JellyDVR Space keeps the name) can be found again under its new item id.
+            if (!HasColumn(conn, "history", "file_name"))
+            {
+                Exec(conn, "ALTER TABLE history ADD COLUMN file_name TEXT;");
+            }
         }
+    }
+
+    /// <summary>A DVR recording's history row, with the file name it was recorded under.</summary>
+    public sealed record RecordedRow(long Id, Guid ItemId, EpisodeIdentity Identity, string Source, DateTime EventUtc, string? FileName);
+
+    /// <summary>All "recorded" rows, newest first.</summary>
+    public List<RecordedRow> LoadRecorded()
+    {
+        lock (_lock)
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT id, item_id, program_id, series_name, series_alt, season, episode, episode_title, is_movie, year, source, event_utc, file_name
+                FROM history WHERE kind = $kind ORDER BY event_utc DESC, id DESC
+                """;
+            cmd.Parameters.AddWithValue("$kind", KindRecorded);
+            var list = new List<RecordedRow>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                list.Add(new RecordedRow(
+                    reader.GetInt64(0),
+                    Guid.Parse(reader.GetString(1)),
+                    ReadIdentity(reader, 2),
+                    reader.GetString(10),
+                    ParseUtc(reader.GetString(11)),
+                    reader.IsDBNull(12) ? null : reader.GetString(12)));
+            }
+
+            return list;
+        }
+    }
+
+    public void SetFileNames(IEnumerable<(long Id, string FileName)> names)
+    {
+        lock (_lock)
+        {
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "UPDATE history SET file_name = $name WHERE id = $id";
+            var pId = cmd.Parameters.Add("$id", SqliteType.Integer);
+            var pName = cmd.Parameters.Add("$name", SqliteType.Text);
+            foreach (var (id, name) in names)
+            {
+                pId.Value = id;
+                pName.Value = name;
+                cmd.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        }
+    }
+
+    /// <summary>
+    /// Points a row at the library item its recording now lives under (it was moved).
+    /// False if that item already has a row of the same kind, which is left as it is.
+    /// </summary>
+    public bool Relink(long id, Guid newItemId)
+    {
+        lock (_lock)
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE history SET item_id = $item WHERE id = $id";
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$item", ItemKey(newItemId));
+            try
+            {
+                return cmd.ExecuteNonQuery() > 0;
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                // SQLITE_CONSTRAINT: ux_history_item.
+                return false;
+            }
+        }
+    }
+
+    private static bool HasColumn(SqliteConnection conn, string table, string column)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT 1 FROM pragma_table_info('{table}') WHERE name = $column";
+        cmd.Parameters.AddWithValue("$column", column);
+        return cmd.ExecuteScalar() is not null;
     }
 
     /// <summary>

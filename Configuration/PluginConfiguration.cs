@@ -52,6 +52,38 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public string[] UsedSymbols { get; set; } = System.Array.Empty<string>();
 
+    /*
+     * The web client's home-screen recordings row (SageTV's Recordings view): what the DVR
+     * recorded, newest first, including recordings since moved to an archive folder.
+     */
+
+    /// <summary>Show the recordings row on the web client's home screen.</summary>
+    public bool RecordingsRowEnabled { get; set; } = true;
+
+    /// <summary>The row's heading.</summary>
+    public string RecordingsRowTitle { get; set; } = "Recorded Shows";
+
+    /// <summary>
+    /// Where the row goes: "top", "after-continue-watching", "after-next-up",
+    /// "before-latest" (ahead of the "Recently Added in …" rows) or "bottom".
+    /// </summary>
+    public string RecordingsRowPosition { get; set; } = "before-latest";
+
+    /// <summary>One card per show (with a count) instead of one per recording.</summary>
+    public bool RecordingsRowGroupByShow { get; set; } = true;
+
+    /// <summary>Include movie recordings (they already have their own library rows).</summary>
+    public bool RecordingsRowIncludeMovies { get; set; }
+
+    /// <summary>Most cards in the row.</summary>
+    public int RecordingsRowLimit { get; set; } = 24;
+
+    /// <summary>
+    /// Which recordings the row shows until a viewer picks otherwise: "all", "current"
+    /// (still in the recordings folders) or "archived" (moved to an archive folder).
+    /// </summary>
+    public string RecordingsRowDefaultFilter { get; set; } = "all";
+
     public string WatchedSymbol
     {
         get => _watchedSymbol;
