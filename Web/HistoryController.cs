@@ -308,8 +308,8 @@ public sealed class HistoryController : ControllerBase
     /// tag marked cells with CSS classes (eh-watched, eh-inlibrary, eh-recordedbefore).
     /// </summary>
     /// <summary>
-    /// The home screen's recordings row for the calling user: what the DVR recorded, newest
-    /// first, with the row's settings. <paramref name="filter"/> is "all", "current" (still in
+    /// The recordings views (home row, Live TV > Recordings grid) for the calling user: what
+    /// the DVR recorded, newest first, with the views' settings. <paramref name="filter"/> is "all", "current" (still in
     /// the recordings folders) or "archived"; omitted, the configured default applies.
     /// </summary>
     [HttpGet("Recordings")]
@@ -329,12 +329,10 @@ public sealed class HistoryController : ControllerBase
             Enabled = cfg.RecordingsRowEnabled,
             Title = cfg.RecordingsRowTitle,
             Position = cfg.RecordingsRowPosition,
-            DefaultFilter = NormalizeFilter(cfg.RecordingsRowDefaultFilter) ?? RecordingsList.FilterAll
+            DefaultFilter = NormalizeFilter(cfg.RecordingsRowDefaultFilter) ?? RecordingsList.FilterAll,
+            TabMode = cfg.RecordingsTabMode,
+            TabLimit = cfg.RecordingsTabLimit
         };
-        if (!cfg.RecordingsRowEnabled)
-        {
-            return Ok(new { Settings = settings, Filter = filter, Cards = Array.Empty<RecordingsList.Card>() });
-        }
 
         var cards = _recordings.Cards(user, filter, cfg.RecordingsRowGroupByShow, cfg.RecordingsRowIncludeMovies, limit ?? cfg.RecordingsRowLimit);
         return Ok(new { Settings = settings, Filter = filter, Cards = cards });

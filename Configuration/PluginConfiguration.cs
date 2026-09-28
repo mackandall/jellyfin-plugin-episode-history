@@ -84,6 +84,16 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public string RecordingsRowDefaultFilter { get; set; } = "all";
 
+    /// <summary>
+    /// Live TV > Recordings: "replace" shows the recordings grid instead of Jellyfin's
+    /// "Recently Added Recordings" (which mixes in everything from the libraries holding the
+    /// recordings folders), "add" shows it above that row, "off" leaves the tab alone.
+    /// </summary>
+    public string RecordingsTabMode { get; set; } = "replace";
+
+    /// <summary>Most cards in the Live TV > Recordings grid.</summary>
+    public int RecordingsTabLimit { get; set; } = 200;
+
     public string WatchedSymbol
     {
         get => _watchedSymbol;

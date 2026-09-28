@@ -81,7 +81,7 @@
                 </div>
 
                 <div class="verticalSection">
-                    <h2>Home screen recordings row</h2>
+                    <h2>Recordings row and Recordings tab</h2>
                     <div class="fieldDescription">
                         A row on the web client's home screen listing what the DVR recorded, newest first, like
                         SageTV's Recordings view. Recordings moved to an archive folder (e.g. by JellyDVR Space)
@@ -139,6 +139,21 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="RecordingsRowLimit">Most cards in the row</label>
                         <input id="RecordingsRowLimit" type="number" min="1" max="200" is="emby-input" />
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="RecordingsTabMode">Live TV &gt; Recordings</label>
+                        <select id="RecordingsTabMode" is="emby-select">
+                            <option value="replace">Show recordings instead of "Recently Added Recordings"</option>
+                            <option value="add">Show recordings above "Recently Added Recordings"</option>
+                            <option value="off">Leave the Recordings tab alone</option>
+                        </select>
+                        <div class="fieldDescription">Jellyfin's "Recently Added Recordings" lists everything in the libraries that hold the recordings folders, including files other DVRs recorded. The recordings grid shows only what this DVR recorded, archived ones included. "All Recordings" (the library tiles) stays either way.</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RecordingsTabLimit">Most cards on the Recordings tab</label>
+                        <input id="RecordingsTabLimit" type="number" min="1" max="200" is="emby-input" />
                     </div>
                 </div>
 
@@ -311,6 +326,8 @@
                         page.querySelector("#RecordingsRowGroupByShow").checked = config.RecordingsRowGroupByShow;
                         page.querySelector("#RecordingsRowIncludeMovies").checked = config.RecordingsRowIncludeMovies;
                         page.querySelector("#RecordingsRowLimit").value = config.RecordingsRowLimit;
+                        page.querySelector("#RecordingsTabMode").value = config.RecordingsTabMode || "replace";
+                        page.querySelector("#RecordingsTabLimit").value = config.RecordingsTabLimit;
                         Dashboard.hideLoadingMsg();
                     });
                     showStatus();
@@ -424,6 +441,8 @@
                         config.RecordingsRowGroupByShow = page.querySelector("#RecordingsRowGroupByShow").checked;
                         config.RecordingsRowIncludeMovies = page.querySelector("#RecordingsRowIncludeMovies").checked;
                         config.RecordingsRowLimit = parseInt(page.querySelector("#RecordingsRowLimit").value, 10) || 24;
+                        config.RecordingsTabMode = page.querySelector("#RecordingsTabMode").value;
+                        config.RecordingsTabLimit = parseInt(page.querySelector("#RecordingsTabLimit").value, 10) || 200;
                         ApiClient.updatePluginConfiguration(pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
                             // Apply new settings (e.g. marks turned off) to the guide right away.
