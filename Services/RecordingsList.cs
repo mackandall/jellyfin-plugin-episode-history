@@ -157,6 +157,76 @@ public sealed class RecordingsList
         return groups.Take(Math.Clamp(limit, 1, 200)).Select(g => ToCard(g, user)).ToList();
     }
 
+    /// <summary>One recording on a show's page.</summary>
+    public sealed record EpisodeCard(
+        Guid Id,
+        string Name,
+        int? Season,
+        int? Episode,
+        bool Played,
+        bool Archived,
+        DateTime RecordedUtc);
+
+    /// <summary>
+    /// A show's recordings for one user, newest first, one card per recording. Matched on the
+    /// show's merge key, so a show whose folders the library merges (recordings folder plus
+    /// archive folders) lists all its recordings whichever folder's series page is open.
+    /// </summary>
+    public List<EpisodeCard>? ShowCards(User user, Guid seriesId)
+    {
+        if (_libraryManager.GetItemById(seriesId) is not Series series)
+        {
+            return null;
+        }
+
+        var key = series.PresentationUniqueKey;
+        return Resolve()
+            .Where(r => r.Item is Episode e
+                && (e.SeriesId.Equals(seriesId) || (!string.IsNullOrEmpty(key) && string.Equals(e.FindSeriesPresentationUniqueKey(), key, StringComparison.Ordinal)))
+                && r.Item.IsVisible(user))
+            .Select(r =>
+            {
+                var e = (Episode)r.Item;
+                return new EpisodeCard(
+                    e.Id,
+                    EpisodeLine(e) ?? e.Name,
+                    e.ParentIndexNumber,
+                    e.IndexNumber,
+                    _userDataManager.GetUserData(user, e)?.Played == true,
+                    r.Archived,
+                    RecordedAt(r));
+            })
+            .OrderByDescending(c => c.RecordedUtc)
+            .ThenByDescending(c => c.Season ?? 0)
+            .ThenByDescending(c => c.Episode ?? 0)
+            .ToList();
+    }
+
+    /// <summary>
+    /// When a recording was made. The history's time is the finish time for recordings the
+    /// plugin saw being made, but for imported rows it is the library's "date added", which a
+    /// rescan can reset; the file's last write (the moment recording stopped) is earlier then.
+    /// </summary>
+    private static DateTime RecordedAt(Recording r)
+    {
+        try
+        {
+            var written = File.GetLastWriteTimeUtc(r.Item.Path);
+            if (written.Year > 2000 && written < r.Row.EventUtc)
+            {
+                return written;
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        return r.Row.EventUtc;
+    }
+
     private Card ToCard(List<Recording> group, User user)
     {
         var newest = group[0];

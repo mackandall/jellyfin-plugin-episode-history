@@ -94,6 +94,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Most cards in the Live TV > Recordings grid.</summary>
     public int RecordingsTabLimit { get; set; } = 200;
 
+    /// <summary>
+    /// Show a "Recordings" row on a show's page (above Next Up) listing that show's DVR
+    /// recordings, newest first, archived ones included.
+    /// </summary>
+    public bool ShowPageRecordingsEnabled { get; set; } = true;
+
     public string WatchedSymbol
     {
         get => _watchedSymbol;

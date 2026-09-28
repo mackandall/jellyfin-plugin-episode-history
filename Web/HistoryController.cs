@@ -338,6 +338,30 @@ public sealed class HistoryController : ControllerBase
         return Ok(new { Settings = settings, Filter = filter, Cards = cards });
     }
 
+    /// <summary>
+    /// A show's recordings for the calling user, newest first, one per recording: the
+    /// "Recordings" row on the show's page. Empty when the DVR recorded none of it.
+    /// </summary>
+    [HttpGet("Recordings/Series/{seriesId}")]
+    [Authorize]
+    public IActionResult SeriesRecordings([FromRoute] Guid seriesId)
+    {
+        var user = _userManager.GetUserById(CurrentUserId());
+        if (user is null)
+        {
+            return Unauthorized();
+        }
+
+        var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        if (!cfg.ShowPageRecordingsEnabled)
+        {
+            return Ok(new { Enabled = false, Recordings = Array.Empty<RecordingsList.EpisodeCard>() });
+        }
+
+        var cards = _recordings.ShowCards(user, seriesId);
+        return cards is null ? NotFound() : Ok(new { Enabled = true, Recordings = cards });
+    }
+
     private static string? NormalizeFilter(string? filter) => filter?.Trim().ToLowerInvariant() switch
     {
         RecordingsList.FilterAll => RecordingsList.FilterAll,

@@ -155,6 +155,14 @@
                         <label class="inputLabel inputLabelUnfocused" for="RecordingsTabLimit">Most cards on the Recordings tab</label>
                         <input id="RecordingsTabLimit" type="number" min="1" max="200" is="emby-input" />
                     </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="ShowPageRecordingsEnabled" type="checkbox" is="emby-checkbox" />
+                            <span>Recordings row on show pages</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">A "Recordings" row above Next Up on a show's page, listing that show's DVR recordings newest first, archived ones included. Only shows the DVR recorded get it.</div>
+                    </div>
                 </div>
 
                 <div>
@@ -328,6 +336,7 @@
                         page.querySelector("#RecordingsRowLimit").value = config.RecordingsRowLimit;
                         page.querySelector("#RecordingsTabMode").value = config.RecordingsTabMode || "replace";
                         page.querySelector("#RecordingsTabLimit").value = config.RecordingsTabLimit;
+                        page.querySelector("#ShowPageRecordingsEnabled").checked = config.ShowPageRecordingsEnabled;
                         Dashboard.hideLoadingMsg();
                     });
                     showStatus();
@@ -443,6 +452,7 @@
                         config.RecordingsRowLimit = parseInt(page.querySelector("#RecordingsRowLimit").value, 10) || 24;
                         config.RecordingsTabMode = page.querySelector("#RecordingsTabMode").value;
                         config.RecordingsTabLimit = parseInt(page.querySelector("#RecordingsTabLimit").value, 10) || 200;
+                        config.ShowPageRecordingsEnabled = page.querySelector("#ShowPageRecordingsEnabled").checked;
                         ApiClient.updatePluginConfiguration(pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
                             // Apply new settings (e.g. marks turned off) to the guide right away.

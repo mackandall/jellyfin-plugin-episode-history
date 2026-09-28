@@ -3,7 +3,10 @@
  * section): what the DVR recorded, newest first, one card per show, with an All / Current /
  * Archived filter. "Archived" recordings are ones since moved out of the recordings folders
  * (e.g. by JellyDVR Space); they stay listed, as in SageTV. Shown as
- *   - a row on the home screen, and
+ *   - a row on the home screen,
+ *   - a "Recordings" row above Next Up on a show's page (that show's recordings, one card
+ *     each), and
+ *   - a "Recordings" row above Next Up on a show's page (that show's recordings, one card each),
  *   - a grid at the top of Live TV > Recordings, replacing (or above) Jellyfin's "Recently
  *     Added Recordings", which lists everything in the libraries holding the recordings
  *     folders, Channels DVR files and archives included. "All Recordings" (library tiles)
@@ -241,52 +244,63 @@
     return window.ApiClient.getImageUrl(id, { type: 'Primary', fillHeight: 446, fillWidth: 297, quality: 96 });
   }
 
-  function buildCard(card) {
-    var root = el('div', 'card overflowPortraitCard card-hoverable card-withuserdata');
-    root.setAttribute('data-type', card.Type);
-    root.setAttribute('data-id', card.Id);
-    var box = el('div', 'cardBox cardBox-bottompadded');
-    var scalable = el('div', 'cardScalable');
-    scalable.appendChild(el('div', 'cardPadder cardPadder-overflowPortrait'));
+  function esc(text) {
+    return String(text === undefined || text === null ? '' : text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
 
-    var image = el('a', 'cardImageContainer coveredImage cardContent');
-    image.href = '#/details?id=' + card.Id;
-    image.setAttribute('aria-label', card.Name);
-    image.style.backgroundImage = 'url("' + imageUrl(card.ImageId) + '")';
-
-    var indicators = el('div', 'cardIndicators');
-    if (card.UnplayedCount > 0 && card.Count > 1) {
-      indicators.appendChild(el('div', 'countIndicator indicator', String(card.UnplayedCount)));
-    } else if (card.UnplayedCount === 0) {
-      var played = el('div', 'playedIndicator indicator');
-      played.appendChild(el('span', 'material-icons indicatorIcon check'));
-      indicators.appendChild(played);
+  /*
+   * One card, in jellyfin-web's own card markup, so that inside an emby-itemscontainer its
+   * clicks are handled by jellyfin-web itself (itemShortcuts): the image opens the item, and
+   * the hover overlay has Play/Resume, the played toggle and the "..." menu, exactly like
+   * native cards. Built as markup because jellyfin-web's custom elements (emby-itemscontainer,
+   * paper-icon-button-light, emby-playstatebutton) are polyfilled and only upgrade that way.
+   */
+  function cardHtml(c) {
+    var backdrop = c.shape === 'backdrop';
+    var html = '<div class="card ' + (backdrop ? 'overflowBackdropCard' : 'overflowPortraitCard') + ' card-hoverable card-withuserdata"'
+      + ' data-isfolder="' + (c.type === 'Series') + '" data-serverid="' + esc(window.ApiClient.serverId()) + '"'
+      + ' data-id="' + esc(c.id) + '" data-type="' + esc(c.type) + '" data-mediatype="' + (c.type === 'Series' ? '' : 'Video') + '">'
+      + '<div class="cardBox cardBox-bottompadded"><div class="cardScalable">'
+      + '<div class="cardPadder ' + (backdrop ? 'cardPadder-overflowBackdrop' : 'cardPadder-overflowPortrait') + '"></div>'
+      + '<a data-action="link" class="cardImageContainer coveredImage cardContent itemAction" href="#/details?id=' + esc(c.id) + '"'
+      + ' aria-label="' + esc(c.name) + '" style="background-image:url(&quot;' + esc(c.image) + '&quot;)">'
+      + '<div class="cardIndicators">';
+    if (c.unplayed > 0 && c.count > 1) {
+      html += '<div class="countIndicator indicator">' + c.unplayed + '</div>';
+    } else if (c.played) {
+      html += '<div class="playedIndicator indicator"><span class="material-icons indicatorIcon check" aria-hidden="true"></span></div>';
     }
-    image.appendChild(indicators);
-
-    if (card.ArchivedCount > 0) {
-      var chip = el('div', 'episodeHistoryArchivedChip');
-      chip.title = card.ArchivedCount === card.Count ? 'Archived' : card.ArchivedCount + ' of ' + card.Count + ' archived';
-      chip.appendChild(el('span', 'material-icons inventory_2'));
-      if (card.ArchivedCount !== card.Count) {
-        chip.appendChild(el('span', null, String(card.ArchivedCount)));
-      }
-      image.appendChild(chip);
+    html += '</div>';
+    if (c.archived > 0) {
+      var all = c.archived === c.count;
+      html += '<div class="episodeHistoryArchivedChip" title="' + (all ? 'Archived' : c.archived + ' of ' + c.count + ' archived') + '">'
+        + '<span class="material-icons inventory_2" aria-hidden="true"></span><span>' + (all ? 'Archived' : c.archived) + '</span></div>';
     }
+    html += '</a>'
+      + '<div class="cardOverlayContainer itemAction" data-action="link">'
+      + '<button is="paper-icon-button-light" type="button" title="Play" class="cardOverlayButton cardOverlayButton-hover itemAction paper-icon-button-light cardOverlayFab-primary" data-action="resume">'
+      + '<span class="material-icons cardOverlayButtonIcon cardOverlayButtonIcon-hover play_arrow" aria-hidden="true"></span></button>'
+      + '<div class="cardOverlayButton-br flex">'
+      + '<button is="emby-playstatebutton" type="button" data-action="none" class="cardOverlayButton cardOverlayButton-hover itemAction paper-icon-button-light emby-button"'
+      + ' data-id="' + esc(c.id) + '" data-serverid="' + esc(window.ApiClient.serverId()) + '" data-itemtype="' + esc(c.type) + '" data-played="' + !!c.played + '">'
+      + '<span class="material-icons cardOverlayButtonIcon cardOverlayButtonIcon-hover check" aria-hidden="true"></span></button>'
+      + '<button is="paper-icon-button-light" type="button" title="More" class="cardOverlayButton cardOverlayButton-hover itemAction paper-icon-button-light" data-action="menu">'
+      + '<span class="material-icons cardOverlayButtonIcon cardOverlayButtonIcon-hover more_vert" aria-hidden="true"></span></button>'
+      + '</div></div>'
+      + '</div>'
+      + '<div class="cardFooter"><div class="cardText cardTextCentered cardText-first"><bdi>' + esc(c.name) + '</bdi></div>'
+      + '<div class="cardText cardTextCentered cardText-secondary"><bdi>' + (esc(c.subtitle) || '&nbsp;') + '</bdi></div></div>'
+      + '</div></div>';
+    return html;
+  }
 
-    scalable.appendChild(image);
-    box.appendChild(scalable);
-
-    var footer = el('div', 'cardFooter');
-    var first = el('div', 'cardText cardTextCentered cardText-first');
-    first.appendChild(el('bdi', null, card.Name));
-    footer.appendChild(first);
-    var second = el('div', 'cardText cardTextCentered cardText-secondary');
-    second.appendChild(el('bdi', null, card.Subtitle || ' '));
-    footer.appendChild(second);
-    box.appendChild(footer);
-    root.appendChild(box);
-    return root;
+  // A real (polyfilled) emby-itemscontainer: jellyfin-web handles its cards' clicks, and the
+  // home tab's pause()/resume() on every .itemsContainer finds the methods it expects. Seen
+  // live: a plain div with that class crashed the home tab ("t.value.pause is not a function").
+  function itemsContainerInto(scroller) {
+    scroller.innerHTML = '<div is="emby-itemscontainer" class="itemsContainer focuscontainer-x episodeHistoryRecordingsItems"></div>';
+    return scroller.firstElementChild;
   }
 
   function buildSection(view, title, limit) {
@@ -310,11 +324,7 @@
     section.appendChild(header);
 
     var scroller = el('div', 'padded-top-focusscale padded-bottom-focusscale episodeHistoryRecordingsScroller');
-    // Not `.itemsContainer`: jellyfin-web's home tab calls pause() on every element with that
-    // class when leaving the page (no check that it exists), which only its own
-    // emby-itemscontainer has. Seen live: "t.value.pause is not a function" crashed the page.
-    var items = el('div', 'focuscontainer-x episodeHistoryRecordingsItems');
-    scroller.appendChild(items);
+    itemsContainerInto(scroller);
     section.appendChild(scroller);
     return section;
   }
@@ -332,9 +342,12 @@
       items.appendChild(el('div', 'episodeHistoryRecordingsEmpty', label));
       return;
     }
-    cards.forEach(function (c) {
-      items.appendChild(buildCard(c));
-    });
+    items.innerHTML = cards.map(function (c) {
+      return cardHtml({
+        id: c.Id, type: c.Type, name: c.Name, subtitle: c.Subtitle, image: imageUrl(c.ImageId),
+        count: c.Count, unplayed: c.UnplayedCount, played: c.UnplayedCount === 0, archived: c.ArchivedCount
+      });
+    }).join('');
   }
 
   function sectionLimit(section) {
@@ -376,7 +389,8 @@
       '.episodeHistoryRecordingsEmpty { opacity: .7; padding: 1em 0; }',
       '.episodeHistoryArchivedChip { position: absolute; left: .4em; bottom: .4em; display: flex; align-items: center; gap: .15em;',
       '  background: rgba(0,0,0,.7); color: #fff; border-radius: .3em; padding: .1em .35em; font-size: .8em; }',
-      '.episodeHistoryArchivedChip .material-icons { font-size: 1.2em; }'
+      '.episodeHistoryArchivedChip .material-icons { font-size: 1.2em; }',
+      '.' + SHOW_CLASS + ' .episodeHistoryRecordingsItems { padding-left: 0; }'
     ].join('\n');
     document.head.appendChild(style);
   }
@@ -440,9 +454,117 @@
     });
   }
 
+  /*
+   * A show's page: a "Recordings" row above Next Up with that show's DVR recordings, newest
+   * first, one card per recording (archived ones marked). The details page is reused for the
+   * next item, so the row carries the show's id and is dropped on any other page. Items that
+   * aren't shows get a 404 from the plugin, remembered so they aren't asked about again.
+   */
+  var SHOW_CLASS = 'episodeHistoryShowRecordings';
+  var showCache = {};    // series id -> { at, data } (data null: not a show / failed)
+  var showInflight = {};
+
+  function detailsId() {
+    var hash = window.location.hash || '';
+    if (hash.indexOf('#/details') !== 0 || hash.indexOf('?') === -1) {
+      return null;
+    }
+    return new URLSearchParams(hash.slice(hash.indexOf('?') + 1)).get('id');
+  }
+
+  function fetchShow(id) {
+    if (showInflight[id]) {
+      return showInflight[id];
+    }
+    var apiClient = window.ApiClient;
+    showInflight[id] = apiClient.ajax({
+      type: 'GET',
+      url: apiClient.getUrl('EpisodeHistory/Recordings/Series/' + id),
+      dataType: 'json'
+    }).then(function (data) {
+      delete showInflight[id];
+      showCache[id] = { at: Date.now(), data: data };
+      return data;
+    }, function () {
+      delete showInflight[id];
+      showCache[id] = { at: Date.now(), data: null };
+      return null;
+    });
+    return showInflight[id];
+  }
+
+  function recordedDate(utc) {
+    var d = new Date(utc);
+    return isNaN(d) ? '' : 'Recorded ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function buildShowSection(id, recordings) {
+    var section = el('div', 'verticalSection detailVerticalSection emby-scroller-container ' + SHOW_CLASS + ' ' + SECTION_CLASS + '-row');
+    section.setAttribute('data-eh-series', id);
+    // No padded-left here: the details page's own sections line up without it.
+    var header = el('div', 'sectionTitleContainer sectionTitleContainer-cards');
+    header.appendChild(el('h2', 'sectionTitle sectionTitle-cards', 'Recordings'));
+    section.appendChild(header);
+    var scroller = el('div', 'padded-top-focusscale padded-bottom-focusscale episodeHistoryRecordingsScroller');
+    var items = itemsContainerInto(scroller);
+    items.innerHTML = recordings.map(function (r) {
+      return cardHtml({
+        id: r.Id, type: 'Episode', shape: 'backdrop', name: r.Name, subtitle: recordedDate(r.RecordedUtc),
+        image: window.ApiClient.getImageUrl(r.Id, { type: 'Primary', fillWidth: 480, fillHeight: 270, quality: 96 }),
+        count: 1, unplayed: r.Played ? 0 : 1, played: r.Played, archived: r.Archived ? 1 : 0
+      });
+    }).join('');
+    section.appendChild(scroller);
+    return section;
+  }
+
+  function checkShowPage() {
+    var id = detailsId();
+    [].slice.call(document.querySelectorAll('.' + SHOW_CLASS)).forEach(function (s) {
+      if (s.getAttribute('data-eh-series') !== id || !s.closest('.page:not(.hide)')) {
+        s.remove();
+      }
+    });
+    if (!id) {
+      return;
+    }
+    var page = document.querySelector('.page:not(.hide)');
+    var nextUp = page && page.querySelector('.nextUpSection');
+    if (!nextUp) {
+      return;
+    }
+    var cached = showCache[id];
+    var shown = page.querySelector('.' + SHOW_CLASS);
+    if (!cached || Date.now() - cached.at > MAX_AGE_MS) {
+      if (!showInflight[id]) {
+        fetchShow(id).then(scheduleCheck);
+      }
+      if (!cached) {
+        return;
+      }
+    }
+    var data = cached.data;
+    var recordings = data && data.Enabled && data.Recordings ? data.Recordings : [];
+    var signature = recordings.map(function (r) { return r.Id + (r.Played ? 'p' : '') + (r.Archived ? 'a' : ''); }).join(',');
+    if (shown && shown.getAttribute('data-eh-sig') === signature) {
+      return;
+    }
+    if (shown) {
+      shown.remove();
+    }
+    if (!recordings.length) {
+      return;
+    }
+    addStyles();
+    var section = buildShowSection(id, recordings);
+    section.setAttribute('data-eh-sig', signature);
+    nextUp.parentNode.insertBefore(section, nextUp);
+  }
+
   function check() {
     removeStrayTabSections();
     VIEWS.forEach(checkView);
+    checkShowPage();
   }
 
   var scheduled = false;
