@@ -180,15 +180,36 @@
     button.querySelector('.recordingIcon').className = 'material-icons recordingIcon play_circle';
     button.querySelector('.buttonText').textContent = resume ? 'Resume from library' : 'Play from library';
     button.addEventListener('click', function () {
-      try {
-        window.sessionStorage.setItem(PLAY_KEY, itemId);
-      } catch (e) {
-        // Private mode: the page opens without auto-play.
-      }
       closeProgramDialog();
-      window.location.hash = '#/details?id=' + itemId;
+      openLibraryItem(itemId);
     });
     return row;
+  }
+
+  /*
+   * Opens the library item's page and asks playIfAsked to press its Play. The page we leave
+   * is tagged so its buttons are never taken for the new page's: jellyfin-web opens the
+   * item in a new page element but keeps the old one in the document (before the new one)
+   * and visible while the transition runs. Seen live: "Play from library" on an airing
+   * program's page pressed that page's Play and tuned BBC America.
+   */
+  var PLAY_WAIT_MS = 15000;
+  var playAskedAt = 0;
+  function openLibraryItem(itemId) {
+    [].slice.call(document.querySelectorAll('[data-eh-origin]')).forEach(function (p) {
+      p.removeAttribute('data-eh-origin');
+    });
+    var origin = document.querySelector('.page:not(.hide)');
+    if (origin) {
+      origin.setAttribute('data-eh-origin', '');
+    }
+    try {
+      window.sessionStorage.setItem(PLAY_KEY, itemId);
+      playAskedAt = Date.now();
+    } catch (e) {
+      // Private mode: the page opens without auto-play.
+    }
+    window.location.hash = '#/details?id=' + itemId;
   }
 
   function closeProgramDialog() {
@@ -205,8 +226,17 @@
     } catch (e) {
       return;
     }
+    if (!wanted) {
+      return;
+    }
+    // A request that never found its button (or one left from before a reload) must not
+    // start playback later out of the blue.
+    if (Date.now() - playAskedAt > PLAY_WAIT_MS) {
+      window.sessionStorage.removeItem(PLAY_KEY);
+      return;
+    }
     var hash = window.location.hash || '';
-    if (!wanted || hash.indexOf('#/details') !== 0 ||
+    if (hash.indexOf('#/details') !== 0 ||
       new URLSearchParams(hash.slice(hash.indexOf('?') + 1)).get('id') !== wanted) {
       return;
     }
@@ -216,7 +246,21 @@
     if (document.querySelector('.dialogContainer .dialog.opened, .recordingDialog.opened')) {
       return;
     }
-    var button = [].slice.call(document.querySelectorAll('.btnPlay')).filter(function (b) {
+    // Wait for the page transition to finish (one page left on screen), and never use the
+    // page we came from, nor a page still showing a Record button (a program's page, where
+    // Play means watch live; a library item has no Record button).
+    var pages = document.querySelectorAll('.page:not(.hide)');
+    if (pages.length !== 1 || pages[0].hasAttribute('data-eh-origin')) {
+      return;
+    }
+    var page = pages[0];
+    var recording = [].slice.call(page.querySelectorAll('.recordingFields-buttons')).some(function (r) {
+      return r.offsetParent !== null;
+    });
+    if (recording) {
+      return;
+    }
+    var button = [].slice.call(page.querySelectorAll('.btnPlay')).filter(function (b) {
       return b.offsetParent !== null && !b.classList.contains('hide') && !b.closest('.dialog, .formDialogFooter');
     })[0];
     if (button) {
@@ -460,7 +504,6 @@
    * rather than the guide dialog, so offer "Play from library" among that page's buttons too.
    * Looked up once per program id; items that aren't programs just 404.
    */
-  var DETAIL_BUTTON_CLASS = 'btnEpisodeHistoryPlayLibrary';
   var detailInfo = {};
   function currentDetailsId() {
     var hash = window.location.hash || '';
@@ -470,26 +513,6 @@
     return new URLSearchParams(hash.slice(hash.indexOf('?') + 1)).get('id');
   }
 
-  function buildDetailButton(programId, itemId, resume) {
-    var button = document.createElement('button');
-    button.setAttribute('is', 'emby-button');
-    button.type = 'button';
-    button.className = 'button-flat detailButton emby-button ' + DETAIL_BUTTON_CLASS;
-    button.setAttribute('data-eh-program', programId);
-    var label = resume ? 'Resume from library' : 'Play from library';
-    button.title = label;
-    button.innerHTML = '<div class="detailButton-content"><span class="material-icons detailButton-icon play_circle" aria-hidden="true"></span></div>';
-    button.addEventListener('click', function () {
-      try {
-        window.sessionStorage.setItem(PLAY_KEY, itemId);
-      } catch (e) {
-        // Private mode: the page opens without auto-play.
-      }
-      window.location.hash = '#/details?id=' + itemId;
-    });
-    return button;
-  }
-
   function checkDetailsPage() {
     var id = currentDetailsId();
     var page = document.querySelector('.page:not(.hide)');
@@ -497,7 +520,7 @@
       return;
     }
     // jellyfin-web reuses the page for the next item; drop buttons left from another one.
-    [].slice.call(page.querySelectorAll('.' + DETAIL_BUTTON_CLASS + ', .' + PLAY_ROW_CLASS)).forEach(function (el) {
+    [].slice.call(page.querySelectorAll('.' + PLAY_ROW_CLASS)).forEach(function (el) {
       if (el.getAttribute('data-eh-program') !== id) {
         el.remove();
       }
@@ -518,16 +541,9 @@
     }
     var resume = info.LibraryItemPositionTicks > 0;
 
-    // Airing now: the page shows its icon button row (Play = watch live); join it.
-    var buttons = page.querySelector('.mainDetailButtons');
-    if (buttons && buttons.offsetParent !== null) {
-      if (!buttons.querySelector('.' + DETAIL_BUTTON_CLASS)) {
-        buttons.insertBefore(buildDetailButton(id, info.LibraryItemId, resume), buttons.firstChild);
-      }
-      return;
-    }
-    // Airing later: that row is hidden and only the Record button shows; add ours below it.
-    // (The first such row is the hidden "record series" one; take the visible one.)
+    // A labelled button below Record, as in the guide's program dialog, whether the program
+    // is airing now or later. (An icon in the top row, next to the live Play, was too easy
+    // to miss.) The first such row is the hidden "record series" one; take the visible one.
     var record = [].slice.call(page.querySelectorAll('.recordingFields-buttons:not(.' + PLAY_ROW_CLASS + ')'))
       .filter(function (r) { return r.offsetParent !== null; })[0];
     if (record && !page.querySelector('.' + PLAY_ROW_CLASS)) {
@@ -535,6 +551,70 @@
       row.setAttribute('data-eh-program', id);
       record.parentNode.insertBefore(row, record.nextSibling);
     }
+  }
+
+  /*
+   * Program cards outside the guide (home screen "On Now", Live TV's Programs tab) have a
+   * "..." menu whose Play means watch live; add "Play from library" under it. The action
+   * sheet doesn't say which item it's for, so the card is taken from the "..." (or
+   * right-click) that opened it, as in ComskipSegments' itemmenu.js. Clicking any action
+   * sheet item closes the sheet as long as the click is allowed to bubble.
+   */
+  var MENU_ITEM_ID = 'episodehistory-playlibrary';
+  var menuProgramId = null;
+  var menuClickedAt = 0;
+
+  function rememberMenuProgram(e, isContextMenu) {
+    var target = e.target;
+    var card = target && target.closest && target.closest('[data-type="Program"][data-id]');
+    if (!card || card.classList.contains('actionSheetMenuItem')) {
+      return;
+    }
+    if (isContextMenu || target.closest('[data-action="menu"]')) {
+      menuProgramId = card.getAttribute('data-id');
+      menuClickedAt = Date.now();
+    }
+  }
+
+  document.addEventListener('click', function (e) { rememberMenuProgram(e, false); }, true);
+  document.addEventListener('contextmenu', function (e) { rememberMenuProgram(e, true); }, true);
+
+  function buildMenuItem(itemId, resume) {
+    var button = document.createElement('button');
+    button.setAttribute('is', 'emby-button');
+    button.type = 'button';
+    button.className = 'listItem listItem-button actionSheetMenuItem emby-button';
+    button.setAttribute('data-id', MENU_ITEM_ID);
+    button.innerHTML = '<span class="actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons play_circle" aria-hidden="true"></span>'
+      + '<div class="listItemBody actionsheetListItemBody"><div class="listItemBodyText actionSheetItemText"></div></div>';
+    button.querySelector('.actionSheetItemText').textContent = resume ? 'Resume from library' : 'Play from library';
+    button.addEventListener('click', function () {
+      openLibraryItem(itemId);
+    });
+    return button;
+  }
+
+  function checkActionSheet() {
+    var scroller = document.querySelector('.actionSheet.opened .actionSheetScroller');
+    if (!scroller || !menuProgramId || Date.now() - menuClickedAt > 5000
+      || scroller.querySelector('[data-id="' + MENU_ITEM_ID + '"]')) {
+      return;
+    }
+    var id = menuProgramId;
+    if (!(id in detailInfo)) {
+      detailInfo[id] = 'pending';
+      api('GET', 'EpisodeHistory/Program/' + id)
+        .then(function (info) { detailInfo[id] = info || null; scheduleCheck(); })
+        .catch(function () { detailInfo[id] = null; });
+      return;
+    }
+    var info = detailInfo[id];
+    if (!info || info === 'pending' || !info.LibraryItemId) {
+      return;
+    }
+    var item = buildMenuItem(info.LibraryItemId, info.LibraryItemPositionTicks > 0);
+    var play = scroller.querySelector('[data-id="resume"], [data-id="play"]');
+    scroller.insertBefore(item, play ? play.nextSibling : scroller.firstChild);
   }
 
   /*
@@ -551,6 +631,7 @@
       tryInject(fields);
     }
     checkDetailsPage();
+    checkActionSheet();
     playIfAsked();
 
     // jellyfin-web re-renders guide cells when scrolling or changing day; tag new ones.
