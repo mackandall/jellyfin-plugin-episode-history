@@ -49,7 +49,11 @@ internal static class LiveBuffers
                     var unkept = doc.RootElement.EnumerateArray()
                         .Where(b => Bool(b, "Owned", true) && !Bool(b, "Kept", false))
                         .ToList();
-                    _paths = unkept.Select(b => Str(b, "Path")).OfType<string>().ToHashSet(StringComparer.Ordinal);
+                    // Path plus ExtraPaths: after a server restart Jellyfin resumes a buffer into "… - 1.ts".
+                    _paths = unkept
+                        .SelectMany(b => new[] { Str(b, "Path") }.Concat(Strs(b, "ExtraPaths")))
+                        .OfType<string>()
+                        .ToHashSet(StringComparer.Ordinal);
                     _items = unkept.Select(b => Guid.TryParse(Str(b, "ItemId"), out var g) ? g : (Guid?)null).OfType<Guid>().ToHashSet();
                     _loadedStamp = stamp;
                 }
@@ -65,6 +69,11 @@ internal static class LiveBuffers
 
     private static string? Str(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static IEnumerable<string?> Strs(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array
+            ? v.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString())
+            : Enumerable.Empty<string?>();
 
     private static bool Bool(JsonElement e, string name, bool fallback) =>
         e.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : fallback;
