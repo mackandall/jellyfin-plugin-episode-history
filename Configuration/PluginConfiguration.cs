@@ -110,6 +110,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public bool ShowPageRecordingsEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Also list files in the recordings folders that don't count as recorded (cut short, failed
+    /// stubs), marked "Partial", so they're easy to find and delete. They stay out of the history.
+    /// </summary>
+    public bool ShowPartialRecordings { get; set; } = true;
+
     public string WatchedSymbol
     {
         get => _watchedSymbol;

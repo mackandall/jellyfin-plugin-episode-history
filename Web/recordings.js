@@ -277,6 +277,13 @@
       html += '<div class="episodeHistoryArchivedChip" title="' + (all ? 'Archived' : c.archived + ' of ' + c.count + ' archived') + '">'
         + '<span class="material-icons inventory_2" aria-hidden="true"></span><span>' + (all ? 'Archived' : c.archived) + '</span></div>';
     }
+    // A file that doesn't count as recorded (cut short, failed stub): marked so it's easy to delete.
+    if (c.partial > 0) {
+      var single = c.count === 1;
+      var text = single ? 'Partial' + (c.partialMinutes ? ' · ' + c.partialMinutes + ' min' : '') : c.partial + ' partial';
+      html += '<div class="episodeHistoryPartialChip" title="Partial recording: too short to count as recorded">'
+        + '<span class="material-icons timelapse" aria-hidden="true"></span><span>' + esc(text) + '</span></div>';
+    }
     html += '</a>'
       + '<div class="cardOverlayContainer itemAction" data-action="link">'
       + '<button is="paper-icon-button-light" type="button" title="Play" class="cardOverlayButton cardOverlayButton-hover itemAction paper-icon-button-light cardOverlayFab-primary" data-action="resume">'
@@ -345,7 +352,8 @@
     items.innerHTML = cards.map(function (c) {
       return cardHtml({
         id: c.Id, type: c.Type, name: c.Name, subtitle: c.Subtitle, image: imageUrl(c.ImageId),
-        count: c.Count, unplayed: c.UnplayedCount, played: c.UnplayedCount === 0, archived: c.ArchivedCount
+        count: c.Count, unplayed: c.UnplayedCount, played: c.UnplayedCount === 0, archived: c.ArchivedCount,
+        partial: c.PartialCount || 0, partialMinutes: c.PartialMinutes
       });
     }).join('');
   }
@@ -390,6 +398,9 @@
       '.episodeHistoryArchivedChip { position: absolute; left: .4em; bottom: .4em; display: flex; align-items: center; gap: .15em;',
       '  background: rgba(0,0,0,.7); color: #fff; border-radius: .3em; padding: .1em .35em; font-size: .8em; }',
       '.episodeHistoryArchivedChip .material-icons { font-size: 1.2em; }',
+      '.episodeHistoryPartialChip { position: absolute; right: .4em; bottom: .4em; display: flex; align-items: center; gap: .15em;',
+      '  background: #f59e0b; color: #1a1a1a; font-weight: 600; border-radius: .3em; padding: .1em .35em; font-size: .8em; }',
+      '.episodeHistoryPartialChip .material-icons { font-size: 1.2em; }',
       '.' + SHOW_CLASS + ' .episodeHistoryRecordingsItems { padding-left: 0; }'
     ].join('\n');
     document.head.appendChild(style);
@@ -511,7 +522,8 @@
       return cardHtml({
         id: r.Id, type: 'Episode', shape: 'backdrop', name: r.Name, subtitle: recordedDate(r.RecordedUtc),
         image: window.ApiClient.getImageUrl(r.Id, { type: 'Primary', fillWidth: 480, fillHeight: 270, quality: 96 }),
-        count: 1, unplayed: r.Played ? 0 : 1, played: r.Played, archived: r.Archived ? 1 : 0
+        count: 1, unplayed: r.Played ? 0 : 1, played: r.Played, archived: r.Archived ? 1 : 0,
+        partial: r.Partial ? 1 : 0, partialMinutes: r.Minutes
       });
     }).join('');
     section.appendChild(scroller);
@@ -579,6 +591,175 @@
       }, 100);
     }
   }
+
+  /*
+   * Card buttons when jellyfin-web doesn't handle them. Its card clicks (play, watched, "...")
+   * come from the emby-itemscontainer element, but jellyfin-web 12 draws Live TV > Recordings with
+   * React and never loads that element, so on that page the container stays a plain div and the
+   * buttons did nothing. There (only where the container wasn't upgraded) they're handled here,
+   * with a small menu of our own: Play, Open, Mark watched, Delete.
+   */
+  var MENU_ID = 'episodeHistoryCardMenu';
+
+  function handledByJellyfin(container) {
+    return !!container && typeof container.pause === 'function';
+  }
+
+  function ownSession() {
+    var client = window.ApiClient;
+    return client.getSessions({ deviceId: client.deviceId() }).then(function (sessions) {
+      return (sessions || []).filter(function (x) { return x.DeviceId === client.deviceId(); })[0] || null;
+    });
+  }
+
+  function playItem(id) {
+    var client = window.ApiClient;
+    return ownSession().then(function (session) {
+      if (session) {
+        return client.ajax({ type: 'POST', url: client.getUrl('Sessions/' + session.Id + '/Playing', { playCommand: 'PlayNow', itemIds: id }) });
+      }
+    });
+  }
+
+  function setPlayed(card, played) {
+    var client = window.ApiClient;
+    var id = card.getAttribute('data-id');
+    var call = played ? client.markPlayed(client.getCurrentUserId(), id, new Date()) : client.markUnplayed(client.getCurrentUserId(), id);
+    return Promise.resolve(call).then(function () {
+      var button = card.querySelector('[is="emby-playstatebutton"]');
+      if (button) {
+        button.setAttribute('data-played', played ? 'true' : 'false');
+        button.classList.toggle('playstatebutton-played', played);
+      }
+      var indicators = card.querySelector('.cardIndicators');
+      if (indicators && !indicators.querySelector('.countIndicator')) {
+        indicators.innerHTML = played ? '<div class="playedIndicator indicator"><span class="material-icons indicatorIcon check" aria-hidden="true"></span></div>' : '';
+      }
+    });
+  }
+
+  function closeMenu() {
+    var m = document.getElementById(MENU_ID);
+    if (m) {
+      m.parentNode.removeChild(m);
+    }
+    document.removeEventListener('keydown', onMenuKey, true);
+  }
+
+  function onMenuKey(e) {
+    if (e.key === 'Escape' || e.key === 'Backspace' || e.keyCode === 10009 || e.keyCode === 461) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+    }
+  }
+
+  function menuItem(icon, label, onClick) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'listItem listItem-button actionSheetMenuItem emby-button';
+    b.style.cssText = 'display:flex;align-items:center;gap:.8em;width:100%;padding:.7em 1em;background:none;border:0;color:inherit;font-size:1em;cursor:pointer;text-align:left;';
+    b.innerHTML = '<span class="material-icons ' + icon + '" aria-hidden="true"></span><span class="eh-menu-text"></span>';
+    b.querySelector('.eh-menu-text').textContent = label;
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function openMenu(card, anchor) {
+    closeMenu();
+    var id = card.getAttribute('data-id');
+    var type = card.getAttribute('data-type');
+    var played = (card.querySelector('[is="emby-playstatebutton"]') || card).getAttribute('data-played') === 'true';
+    var single = type !== 'Series';
+    var name = (card.querySelector('.cardText-first') || {}).textContent || '';
+    var sub = (card.querySelector('.cardText-secondary') || {}).textContent || '';
+
+    var overlay = el('div');
+    overlay.id = MENU_ID;
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;';
+    var box = el('div');
+    box.style.cssText = 'position:fixed;min-width:15em;max-width:22em;background:#252525;color:#fff;border-radius:.4em;box-shadow:0 .3em 1.5em rgba(0,0,0,.6);padding:.3em 0;';
+    var title = el('div', null, name + (sub && single ? ' · ' + sub : ''));
+    title.style.cssText = 'padding:.5em 1em;opacity:.7;font-size:.9em;border-bottom:1px solid rgba(255,255,255,.1);';
+    box.appendChild(title);
+
+    box.appendChild(menuItem('play_arrow', 'Play', function () { closeMenu(); playItem(id); }));
+    box.appendChild(menuItem('info', 'Open', function () { closeMenu(); window.location.hash = '#/details?id=' + id; }));
+    box.appendChild(menuItem(played ? 'remove_done' : 'done', played ? 'Mark as unwatched' : 'Mark as watched', function () {
+      closeMenu();
+      setPlayed(card, !played);
+    }));
+
+    var client = window.ApiClient;
+    Promise.resolve(single ? client.getCurrentUser() : null).then(function (user) {
+      var policy = user && user.Policy;
+      if (!policy || !(policy.EnableContentDeletion || (policy.EnableContentDeletionFromFolders || []).length) || !box.isConnected) {
+        return;
+      }
+      // Two taps instead of a confirm() dialog, which TV remotes handle poorly.
+      var armed = false;
+      var del = menuItem('delete', 'Delete recording', function () {
+        var text = del.querySelector('.eh-menu-text');
+        if (!armed) {
+          armed = true;
+          text.textContent = 'Press again to delete for good';
+          del.style.color = '#ff6b6b';
+          return;
+        }
+        text.textContent = 'Deleting…';
+        del.disabled = true;
+        var started = Date.now();
+        client.deleteItem(id).then(function () {
+          log('deleted ' + id + ' in ' + (Date.now() - started) + ' ms');
+          closeMenu();
+          card.parentNode && card.parentNode.removeChild(card);
+        }, function () {
+          text.textContent = 'Could not delete it';
+        });
+      });
+      box.appendChild(del);
+    });
+
+    overlay.appendChild(box);
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) {
+        closeMenu();
+      }
+    });
+    document.body.appendChild(overlay);
+    var r = anchor.getBoundingClientRect();
+    var left = Math.min(r.left, window.innerWidth - 260);
+    var top = r.bottom + 4;
+    box.style.left = Math.max(8, left) + 'px';
+    box.style.top = Math.max(8, Math.min(top, window.innerHeight - 260)) + 'px';
+    document.addEventListener('keydown', onMenuKey, true);
+    var first = box.querySelector('button');
+    if (first) {
+      first.focus();
+    }
+  }
+
+  document.addEventListener('click', function (e) {
+    var button = e.target && e.target.closest && e.target.closest('.episodeHistoryRecordingsItems .cardOverlayButton');
+    if (!button) {
+      return;
+    }
+    var container = button.closest('.episodeHistoryRecordingsItems');
+    var card = button.closest('.card');
+    if (!card || handledByJellyfin(container)) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    var action = button.getAttribute('data-action');
+    if (action === 'menu') {
+      openMenu(card, button);
+    } else if (action === 'resume') {
+      playItem(card.getAttribute('data-id'));
+    } else if (button.getAttribute('is') === 'emby-playstatebutton') {
+      setPlayed(card, button.getAttribute('data-played') !== 'true');
+    }
+  }, true);
 
   new MutationObserver(scheduleCheck).observe(document.body, { childList: true, subtree: true });
   window.addEventListener('hashchange', scheduleCheck);

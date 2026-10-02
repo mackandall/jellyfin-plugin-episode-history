@@ -153,6 +153,17 @@
                         </label>
                     </div>
 
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="ShowPartialRecordings" type="checkbox" is="emby-checkbox" />
+                            <span>Show partial recordings (marked "Partial")</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Files in the recordings folders too short to count as recorded (cut short, failed starts), so they're
+                            easy to find and delete. They never count for guide marks or duplicate skipping.
+                        </div>
+                    </div>
+
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="RecordingsRowLimit">Most cards in the row</label>
                         <input id="RecordingsRowLimit" type="number" min="1" max="200" is="emby-input" />
@@ -353,6 +364,7 @@
                         page.querySelector("#RecordingsRowDefaultFilter").value = config.RecordingsRowDefaultFilter || "all";
                         page.querySelector("#RecordingsRowGroupByShow").checked = config.RecordingsRowGroupByShow;
                         page.querySelector("#RecordingsRowIncludeMovies").checked = config.RecordingsRowIncludeMovies;
+                        page.querySelector("#ShowPartialRecordings").checked = config.ShowPartialRecordings !== false;
                         page.querySelector("#RecordingsRowLimit").value = config.RecordingsRowLimit;
                         page.querySelector("#RecordingsTabMode").value = config.RecordingsTabMode || "replace";
                         page.querySelector("#RecordingsTabLimit").value = config.RecordingsTabLimit;
@@ -472,6 +484,7 @@
                         config.RecordingsRowDefaultFilter = page.querySelector("#RecordingsRowDefaultFilter").value;
                         config.RecordingsRowGroupByShow = page.querySelector("#RecordingsRowGroupByShow").checked;
                         config.RecordingsRowIncludeMovies = page.querySelector("#RecordingsRowIncludeMovies").checked;
+                        config.ShowPartialRecordings = page.querySelector("#ShowPartialRecordings").checked;
                         config.RecordingsRowLimit = parseInt(page.querySelector("#RecordingsRowLimit").value, 10) || 24;
                         config.RecordingsTabMode = page.querySelector("#RecordingsTabMode").value;
                         config.RecordingsTabLimit = parseInt(page.querySelector("#RecordingsTabLimit").value, 10) || 200;

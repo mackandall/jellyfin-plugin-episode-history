@@ -47,6 +47,12 @@
     script.defer = true;
     script.src = '/EpisodeHistory/web/recordings.js';
     document.head.appendChild(script);
+
+    // JellyDVR Schedule's "all tuners are busy" message (a 404 without that plugin is harmless).
+    var tuners = document.createElement('script');
+    tuners.defer = true;
+    tuners.src = '/JellyDvrSchedule/web/tuners.js';
+    document.head.appendChild(tuners);
   })();
 
   // Remember which program the dialog about to open belongs to. Keyboard/remote "enter"
