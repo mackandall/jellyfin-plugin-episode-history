@@ -74,8 +74,29 @@ public sealed record EpisodeIdentity(
     }
 
     /// <summary>
+    /// Keys to look this entry up by: its <see cref="NameKeys"/>, plus — for a non-movie with
+    /// no season, episode or episode title — the movie key for its title and year. Guide data
+    /// lists stand-up and other specials as one-off shows ("SH..." id, not a movie), while the
+    /// recording is a movie in the library (category routing moves them to Movies). Only used
+    /// for lookups, never indexed, so a generic show without episode info ("World News Tonight")
+    /// still doesn't match other airings of itself.
+    /// </summary>
+    public IEnumerable<string> LookupKeys()
+    {
+        var keys = NameKeys().ToList();
+        if (!IsMovie && Season is not > 0 && Episode is not > 0 && Normalize(EpisodeTitle).Length < 3)
+        {
+            var asMovie = this with { IsMovie = true };
+            keys.AddRange(asMovie.NameKeys());
+        }
+
+        return keys;
+    }
+
+    /// <summary>
     /// Whether two identities are the same episode, by the same rule the guide marks use:
-    /// programme ids decide when both have one, otherwise any shared name key.
+    /// programme ids decide when both have one, otherwise a lookup key of one side that is a
+    /// name key of the other.
     /// </summary>
     public bool SameEpisode(EpisodeIdentity other)
     {
@@ -85,7 +106,8 @@ public sealed record EpisodeIdentity(
         }
 
         var keys = new HashSet<string>(NameKeys(), StringComparer.Ordinal);
-        return other.NameKeys().Any(keys.Contains);
+        var otherKeys = new HashSet<string>(other.NameKeys(), StringComparer.Ordinal);
+        return other.LookupKeys().Any(keys.Contains) || LookupKeys().Any(otherKeys.Contains);
     }
 
     private static void AddName(List<string> names, string? raw)

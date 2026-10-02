@@ -126,7 +126,7 @@ public sealed class HistoryIndex
             }
         }
 
-        foreach (var key in identity.NameKeys())
+        foreach (var key in identity.LookupKeys())
         {
             if (!_byNameKey.TryGetValue(key, out var byName))
             {
