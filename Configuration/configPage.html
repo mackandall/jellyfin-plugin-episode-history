@@ -39,6 +39,23 @@
                         <label class="inputLabel inputLabelUnfocused" for="RecordedBeforeSymbol">Recorded before (since deleted) symbol</label>
                         <input id="RecordedBeforeSymbol" type="text" is="emby-input" />
                     </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="EnableScheduleMarks" type="checkbox" is="emby-checkbox" />
+                            <span>Mark airings JellyDVR Schedule took off the schedule</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Needs the JellyDVR Schedule plugin. Skipped for a tuner conflict, or recorded at another airing instead.
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="SkippedSymbol">Skipped (tuner conflict) symbol</label>
+                        <input id="SkippedSymbol" type="text" is="emby-input" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="OtherAiringSymbol">Recording another airing symbol</label>
+                        <input id="OtherAiringSymbol" type="text" is="emby-input" />
+                    </div>
                 </div>
 
                 <div class="verticalSection">
@@ -327,6 +344,9 @@
                         page.querySelector("#WatchedSymbol").value = config.WatchedSymbol || "";
                         page.querySelector("#InLibrarySymbol").value = config.InLibrarySymbol || "";
                         page.querySelector("#RecordedBeforeSymbol").value = config.RecordedBeforeSymbol || "";
+                        page.querySelector("#EnableScheduleMarks").checked = config.EnableScheduleMarks !== false;
+                        page.querySelector("#SkippedSymbol").value = config.SkippedSymbol || "";
+                        page.querySelector("#OtherAiringSymbol").value = config.OtherAiringSymbol || "";
                         page.querySelector("#RecordingsRowEnabled").checked = config.RecordingsRowEnabled;
                         page.querySelector("#RecordingsRowTitle").value = config.RecordingsRowTitle || "";
                         page.querySelector("#RecordingsRowPosition").value = config.RecordingsRowPosition || "before-latest";
@@ -443,6 +463,9 @@
                         config.WatchedSymbol = page.querySelector("#WatchedSymbol").value;
                         config.InLibrarySymbol = page.querySelector("#InLibrarySymbol").value;
                         config.RecordedBeforeSymbol = page.querySelector("#RecordedBeforeSymbol").value;
+                        config.EnableScheduleMarks = page.querySelector("#EnableScheduleMarks").checked;
+                        config.SkippedSymbol = page.querySelector("#SkippedSymbol").value;
+                        config.OtherAiringSymbol = page.querySelector("#OtherAiringSymbol").value;
                         config.RecordingsRowEnabled = page.querySelector("#RecordingsRowEnabled").checked;
                         config.RecordingsRowTitle = page.querySelector("#RecordingsRowTitle").value.trim() || "Recorded Shows";
                         config.RecordingsRowPosition = page.querySelector("#RecordingsRowPosition").value;

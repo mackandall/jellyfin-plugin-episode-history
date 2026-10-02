@@ -22,12 +22,16 @@ public sealed class GuideMarker
     private const string WatchedLabel = "Watched";
     private const string InLibraryLabel = "In library";
     private const string RecordedBeforeLabel = "Recorded before";
+    private const string SkippedLabel = "Not recording";
+    private const string OtherAiringLabel = "Recording another airing";
 
-    private static readonly string[] Labels = { WatchedLabel, InLibraryLabel, RecordedBeforeLabel };
+    private static readonly string[] Labels = { WatchedLabel, InLibraryLabel, RecordedBeforeLabel, SkippedLabel, OtherAiringLabel };
 
     private readonly string _watched;
     private readonly string _inLibrary;
     private readonly string _recordedBefore;
+    private readonly string _skipped;
+    private readonly string _otherAiring;
     private readonly Regex _prefix;
 
     public GuideMarker(PluginConfiguration config)
@@ -35,11 +39,14 @@ public sealed class GuideMarker
         _watched = config.WatchedSymbol;
         _inLibrary = config.InLibrarySymbol;
         _recordedBefore = config.RecordedBeforeSymbol;
+        _skipped = config.SkippedSymbol;
+        _otherAiring = config.OtherAiringSymbol;
 
         var symbols = new[]
             {
-                _watched, _inLibrary, _recordedBefore,
-                PluginConfiguration.DefaultWatchedSymbol, PluginConfiguration.DefaultInLibrarySymbol, PluginConfiguration.DefaultRecordedBeforeSymbol
+                _watched, _inLibrary, _recordedBefore, _skipped, _otherAiring,
+                PluginConfiguration.DefaultWatchedSymbol, PluginConfiguration.DefaultInLibrarySymbol, PluginConfiguration.DefaultRecordedBeforeSymbol,
+                PluginConfiguration.DefaultSkippedSymbol, PluginConfiguration.DefaultOtherAiringSymbol
             }
             .Concat(config.UsedSymbols ?? Array.Empty<string>())
             .Where(sym => !string.IsNullOrEmpty(sym))
@@ -69,15 +76,27 @@ public sealed class GuideMarker
 
     public bool IsMarked(string? title) => !string.IsNullOrEmpty(title) && _prefix.IsMatch(title);
 
-    /// <summary>The title to show for <paramref name="state"/>, given the unmarked title.</summary>
-    public string? Compose(string? original, HistoryState state)
+    /// <summary>
+    /// The title to show for <paramref name="state"/>, given the unmarked title. A JellyDVR
+    /// Schedule mark (<paramref name="schedule"/>) comes first: it's the one to act on.
+    /// </summary>
+    public string? Compose(string? original, HistoryState state, ScheduleMark schedule = ScheduleMark.None)
     {
-        if (!state.Any)
+        if (!state.Any && schedule == ScheduleMark.None)
         {
             return original;
         }
 
         var sb = new StringBuilder();
+        if (schedule == ScheduleMark.Skipped)
+        {
+            sb.Append(_skipped);
+        }
+        else if (schedule == ScheduleMark.OtherAiring)
+        {
+            sb.Append(_otherAiring);
+        }
+
         if (state.Watched)
         {
             sb.Append(_watched);
@@ -95,7 +114,12 @@ public sealed class GuideMarker
         sb.Append(' ');
         if (string.IsNullOrEmpty(original))
         {
-            sb.Append(state.Watched ? WatchedLabel : state.InLibrary ? InLibraryLabel : RecordedBeforeLabel);
+            sb.Append(
+                state.Watched ? WatchedLabel
+                : state.InLibrary ? InLibraryLabel
+                : state.RecordedBefore ? RecordedBeforeLabel
+                : schedule == ScheduleMark.Skipped ? SkippedLabel
+                : OtherAiringLabel);
         }
         else
         {
@@ -104,6 +128,18 @@ public sealed class GuideMarker
 
         return sb.ToString();
     }
+}
+
+/// <summary>What JellyDVR Schedule did to a guide entry.</summary>
+public enum ScheduleMark
+{
+    None,
+
+    /// <summary>Not recording: lost a tuner conflict.</summary>
+    Skipped,
+
+    /// <summary>Recorded at another airing (moved there, or this copy dropped as a duplicate).</summary>
+    OtherAiring
 }
 
 /// <summary>What the history knows about one episode.</summary>

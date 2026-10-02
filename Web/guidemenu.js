@@ -30,6 +30,7 @@
   var ROW_CLASS = 'episodeHistoryWatchedRow';
   var FORGET_ROW_CLASS = 'episodeHistoryForgetRow';
   var PLAY_ROW_CLASS = 'episodeHistoryPlayRow';
+  var INSTEAD_ROW_CLASS = 'episodeHistoryRecordInsteadRow';
   var PLAY_KEY = 'episodeHistoryPlayItem';
   var lastProgramId = null;
 
@@ -356,12 +357,15 @@
     }
 
     return Promise.all(batches.map(function (batch) {
-      return apiClient.getItems(apiClient.getCurrentUserId(), { Ids: batch.join(','), EnableImages: false })
+      // Without the type filter /Items returns only some of the requested guide entries
+      // (seen on 12.0: just the ones with a recording scheduled).
+      return apiClient.getItems(apiClient.getCurrentUserId(), { Ids: batch.join(','), IncludeItemTypes: 'TvProgram', EnableImages: false })
         .then(function (result) {
           (result.Items || []).forEach(function (item) {
             var cell = document.querySelector('.programCell[data-id="' + item.Id + '"]');
             if (cell) {
               setSecondaryTitle(cell, item.EpisodeTitle);
+              setTimerIcon(cell, item);
             }
           });
         });
@@ -369,14 +373,45 @@
   }
 
   /*
+   * jellyfin-web only redraws a cell's recording dot for changes made in its own dialog, so a
+   * recording the server scheduled or cancelled (JellyDVR Schedule moving or skipping one, a
+   * duplicate skipped) kept its old dot until a page reload. Same markup and rule as the guide.
+   */
+  function setTimerIcon(cell, item) {
+    var name = cell.querySelector('.guideProgramName');
+    if (!name) {
+      return;
+    }
+
+    [].slice.call(name.querySelectorAll('.timerIcon, .seriesTimerIcon')).forEach(function (el) {
+      el.parentNode.removeChild(el);
+    });
+    var live = item.TimerStatus !== 'Cancelled';
+    var series = !!item.SeriesTimerId && live;
+    var single = !series && !!item.TimerId && live;
+    if (item.TimerId && live) {
+      cell.setAttribute('data-timerid', item.TimerId);
+    } else {
+      cell.removeAttribute('data-timerid');
+    }
+    if (series || single) {
+      var icon = document.createElement('span');
+      icon.className = series ? 'seriesTimerIcon material-icons programIcon fiber_smart_record' : 'timerIcon material-icons programIcon fiber_manual_record';
+      icon.setAttribute('aria-hidden', 'true');
+      name.appendChild(icon);
+    }
+  }
+
+  /*
    * CSS hooks for styling marks under Dashboard -> General -> Custom CSS. A marked guide
-   * cell gets `eh-marked` plus `eh-watched` / `eh-inlibrary` / `eh-recordedbefore`, and the
+   * cell gets `eh-marked` plus `eh-watched` / `eh-inlibrary` / `eh-recordedbefore` (and, from
+   * JellyDVR Schedule, `eh-skipped` / `eh-otherairing`), and the
    * symbols in its episode-title line are wrapped in `span.eh-mark`, e.g.
    *   .programCell.eh-watched .guideProgramNameText { font-style: italic; }
    *   .eh-mark { color: #4caf50; }
    * The symbols are read from the plugin, so changing them in its settings keeps working.
    */
-  var MARK_CLASSES = ['eh-marked', 'eh-watched', 'eh-inlibrary', 'eh-recordedbefore'];
+  var MARK_CLASSES = ['eh-marked', 'eh-watched', 'eh-inlibrary', 'eh-recordedbefore', 'eh-skipped', 'eh-otherairing'];
   var symbols = null;
   var markRegex = null;
   var symbolsLoadedAt = 0;
@@ -388,7 +423,7 @@
   function loadSymbols() {
     symbolsLoadedAt = Date.now();
     return api('GET', 'EpisodeHistory/Symbols').then(function (r) {
-      var list = [r.Watched, r.InLibrary, r.RecordedBefore].filter(function (x) { return !!x; });
+      var list = [r.Watched, r.InLibrary, r.RecordedBefore, r.Skipped, r.OtherAiring].filter(function (x) { return !!x; });
       // Longest first, so a multi-character symbol wins over one it contains.
       list.sort(function (a, b) { return b.length - a.length; });
       symbols = r;
@@ -411,13 +446,15 @@
       return; // already handled for this exact text
     }
 
-    var flags = { watched: false, inlibrary: false, recordedbefore: false };
+    var flags = { watched: false, inlibrary: false, recordedbefore: false, skipped: false, otherairing: false };
     var match = markRegex.exec(text);
     if (match) {
       var marks = match[1];
       flags.watched = marks.indexOf(symbols.Watched) !== -1;
       flags.inlibrary = marks.indexOf(symbols.InLibrary) !== -1;
       flags.recordedbefore = marks.indexOf(symbols.RecordedBefore) !== -1;
+      flags.skipped = !!symbols.Skipped && marks.indexOf(symbols.Skipped) !== -1;
+      flags.otherairing = !!symbols.OtherAiring && marks.indexOf(symbols.OtherAiring) !== -1;
 
       var span = document.createElement('span');
       span.className = 'eh-mark';
@@ -436,11 +473,13 @@
       return;
     }
 
-    var any = flags.watched || flags.inlibrary || flags.recordedbefore;
+    var any = flags.watched || flags.inlibrary || flags.recordedbefore || flags.skipped || flags.otherairing;
     cell.classList.toggle('eh-marked', any);
     cell.classList.toggle('eh-watched', flags.watched);
     cell.classList.toggle('eh-inlibrary', flags.inlibrary);
     cell.classList.toggle('eh-recordedbefore', flags.recordedbefore);
+    cell.classList.toggle('eh-skipped', flags.skipped);
+    cell.classList.toggle('eh-otherairing', flags.otherairing);
   }
 
   // Same markup jellyfin-web's guide uses for the episode-title line; a program that had
@@ -506,6 +545,48 @@
       .catch(function () {
         log('Episode History plugin not available for program ' + programId);
       });
+
+    // JellyDVR Schedule: an airing it took off the schedule (tuner conflict / another airing)
+    // gets "Record this instead". A 404 just means that plugin isn't installed.
+    api('GET', 'JellyDvrSchedule/Program/' + programId)
+      .then(function (s) {
+        if (s && s.Outcome && fields.isConnected && !fields.querySelector('.' + INSTEAD_ROW_CLASS)) {
+          fields.appendChild(buildInsteadRow(programId, s.Outcome));
+        }
+      })
+      .catch(function () { /* JellyDVR Schedule not installed, or no Live TV management rights */ });
+  }
+
+  /*
+   * "Record this instead": records this airing whatever else has to give way (JellyDVR Schedule
+   * moves or skips the lower-priority clash) and reports what changed under the button.
+   */
+  function buildInsteadRow(programId, outcome) {
+    var row = buttonRow(INSTEAD_ROW_CLASS);
+    var button = row.querySelector('button');
+    button.querySelector('.recordingIcon').className = 'material-icons recordingIcon fiber_manual_record';
+    button.querySelector('.recordingIcon').style.color = '#f59e0b';
+    button.querySelector('.buttonText').textContent = 'Record this instead';
+
+    var note = document.createElement('div');
+    note.className = 'fieldDescription';
+    note.style.cssText = 'margin:.3em 0 0 .2em;opacity:.8;';
+    note.textContent = outcome.Detail || '';
+    row.firstChild.appendChild(note);
+
+    button.addEventListener('click', function () {
+      button.disabled = true;
+      api('POST', 'JellyDvrSchedule/RecordInstead/' + programId)
+        .then(function (r) {
+          button.querySelector('.buttonText').textContent = r && r.Recording ? 'Recording this one' : 'Could not record it';
+          note.textContent = (r && r.Message) || '';
+        })
+        .catch(function () {
+          button.disabled = false;
+          note.textContent = 'Could not schedule it.';
+        });
+    });
+    return row;
   }
 
   /*

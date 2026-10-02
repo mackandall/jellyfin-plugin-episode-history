@@ -7,11 +7,15 @@ public class PluginConfiguration : BasePluginConfiguration
     public const string DefaultWatchedSymbol = "✓";
     public const string DefaultInLibrarySymbol = "●";
     public const string DefaultRecordedBeforeSymbol = "○";
+    public const string DefaultSkippedSymbol = "🟧";
+    public const string DefaultOtherAiringSymbol = "↪";
 
     // Trimmed on set: the config page tends to leave stray whitespace on pasted values.
     private string _watchedSymbol = DefaultWatchedSymbol;
     private string _inLibrarySymbol = DefaultInLibrarySymbol;
     private string _recordedBeforeSymbol = DefaultRecordedBeforeSymbol;
+    private string _skippedSymbol = DefaultSkippedSymbol;
+    private string _otherAiringSymbol = DefaultOtherAiringSymbol;
 
     /// <summary>
     /// Prefix guide entries' episode titles with watched / in-library / recorded-before
@@ -24,6 +28,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// is currently in the library. Manual one-off recordings are never touched.
     /// </summary>
     public bool EnableDuplicateSkipping { get; set; } = true;
+
+    /// <summary>
+    /// Mark guide entries JellyDVR Schedule took off the schedule: skipped for a tuner conflict,
+    /// or recorded at another airing instead (moved, or a duplicate dropped).
+    /// </summary>
+    public bool EnableScheduleMarks { get; set; } = true;
 
     /// <summary>
     /// A finished recording only counts as "recorded" when it ran for at least this share
@@ -116,6 +126,18 @@ public class PluginConfiguration : BasePluginConfiguration
     {
         get => _recordedBeforeSymbol;
         set => _recordedBeforeSymbol = Clean(value, DefaultRecordedBeforeSymbol);
+    }
+
+    public string SkippedSymbol
+    {
+        get => _skippedSymbol;
+        set => _skippedSymbol = Clean(value, DefaultSkippedSymbol);
+    }
+
+    public string OtherAiringSymbol
+    {
+        get => _otherAiringSymbol;
+        set => _otherAiringSymbol = Clean(value, DefaultOtherAiringSymbol);
     }
 
     private static string Clean(string? value, string fallback)

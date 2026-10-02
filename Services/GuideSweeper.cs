@@ -50,9 +50,11 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     private readonly HistoryStore _store;
     private readonly LibraryImporter _importer;
     private readonly RecordingsList _recordings;
+    private readonly ScheduleOutcomes _outcomes;
     private readonly ILogger<GuideSweeper> _logger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private readonly HashSet<string> _disarmed = new(StringComparer.Ordinal);
+    private HashSet<Guid>? _lastScheduled;
     private readonly Timer _debounce;
     private readonly Timer _periodic;
     private volatile string _pendingReason = "startup";
@@ -65,8 +67,10 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         HistoryStore store,
         LibraryImporter importer,
         RecordingsList recordings,
+        ScheduleOutcomes outcomes,
         ILogger<GuideSweeper> logger)
     {
+        _outcomes = outcomes;
         _recordings = recordings;
         _libraryManager = libraryManager;
         _liveTvManager = liveTvManager;
@@ -168,6 +172,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         _liveTvManager.SeriesTimerCreated += OnTimerChanged;
         _liveTvManager.TimerCancelled += OnTimerChanged;
         _taskManager.TaskCompleted += OnTaskCompleted;
+        _outcomes.Changed += OnOutcomesChanged;
 
         // First sweep a little after startup (the guide and library are loaded by then);
         // an empty history is seeded from the library first.
@@ -182,6 +187,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         _liveTvManager.SeriesTimerCreated -= OnTimerChanged;
         _liveTvManager.TimerCancelled -= OnTimerChanged;
         _taskManager.TaskCompleted -= OnTaskCompleted;
+        _outcomes.Changed -= OnOutcomesChanged;
         _debounce.Change(Timeout.Infinite, Timeout.Infinite);
         _periodic.Change(Timeout.Infinite, Timeout.Infinite);
         return Task.CompletedTask;
@@ -208,6 +214,9 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     }
 
     private void OnTimerChanged(object? sender, EventArgs e) => Request("schedule changed");
+
+    // JellyDVR Schedule skipped / moved / restored something: someone may be looking at the guide.
+    private void OnOutcomesChanged(object? sender, EventArgs e) => Request("conflict decisions changed", TimeSpan.FromSeconds(3));
 
     private void OnTaskCompleted(object? sender, TaskCompletionEventArgs e)
     {
@@ -337,6 +346,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         }).OfType<LiveTvProgram>().ToList();
 
         int watched = 0, inLibrary = 0, recordedBefore = 0;
+        var outcomes = _outcomes.Load();
         var changed = new List<LiveTvProgram>();
         var markedButScheduled = new HashSet<Guid>();
         foreach (var program in programs)
@@ -354,7 +364,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                 markedButScheduled.Add(program.Id);
             }
 
-            var desired = DesiredTitle(cfg, marker, original, state, scheduled);
+            var desired = DesiredTitle(cfg, marker, original, state, scheduled, ScheduleMarkFor(cfg, outcomes, program.Id));
             if (!string.Equals(desired, current, StringComparison.Ordinal))
             {
                 program.EpisodeTitle = desired;
@@ -368,7 +378,16 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             await _libraryManager.UpdateItemsAsync(group.ToList<BaseItem>(), parent, ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
         }
 
-        RecordChanges(changed.Select(p => p.Id));
+        // Entries whose recording was scheduled or cancelled since the last sweep go in the change
+        // feed too, so open guides redraw their recording dot (e.g. the airing a recording moved to).
+        var scheduleChanged = _lastScheduled is null ? new HashSet<Guid>() : new HashSet<Guid>(scheduledPrograms);
+        if (_lastScheduled is not null)
+        {
+            scheduleChanged.SymmetricExceptWith(_lastScheduled);
+        }
+
+        _lastScheduled = scheduledPrograms;
+        RecordChanges(changed.Select(p => p.Id).Concat(scheduleChanged).Distinct());
 
         // 3. Timers that copied a marked title: make them re-copy the clean one.
         int fixedTimers = 0;
@@ -454,8 +473,13 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     /// The episode title a guide entry should carry. Entries with an active timer stay
     /// unmarked, since the timer copies the title into the recording's name.
     /// </summary>
-    private static string? DesiredTitle(PluginConfiguration cfg, GuideMarker marker, string? original, HistoryState state, bool scheduled) =>
-        cfg.EnableGuideMarks && !scheduled ? marker.Compose(original, state) : original;
+    private static string? DesiredTitle(PluginConfiguration cfg, GuideMarker marker, string? original, HistoryState state, bool scheduled, ScheduleMark schedule) =>
+        cfg.EnableGuideMarks && !scheduled ? marker.Compose(original, state, schedule) : original;
+
+    private static ScheduleMark ScheduleMarkFor(PluginConfiguration cfg, IReadOnlyDictionary<Guid, string> outcomes, Guid programId) =>
+        !cfg.EnableScheduleMarks || !outcomes.TryGetValue(programId, out var kind) ? ScheduleMark.None
+        : kind == ScheduleOutcomes.KindSkipped ? ScheduleMark.Skipped
+        : ScheduleMark.OtherAiring;
 
     /// <summary>
     /// Re-marks one guide entry right away (after a "mark as watched" from a client menu),
@@ -481,7 +505,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                 && Guid.TryParse(t.ProgramId, out var id) && id == programId);
 
             var current = program.EpisodeTitle;
-            var desired = DesiredTitle(cfg, marker, marker.Strip(current), state, scheduled);
+            var desired = DesiredTitle(cfg, marker, marker.Strip(current), state, scheduled, ScheduleMarkFor(cfg, _outcomes.Load(), programId));
             if (!string.Equals(desired, current, StringComparison.Ordinal))
             {
                 program.EpisodeTitle = desired;
@@ -531,7 +555,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     private void RememberSymbols(PluginConfiguration cfg)
     {
         var used = cfg.UsedSymbols ?? Array.Empty<string>();
-        var missing = new[] { cfg.WatchedSymbol, cfg.InLibrarySymbol, cfg.RecordedBeforeSymbol }
+        var missing = new[] { cfg.WatchedSymbol, cfg.InLibrarySymbol, cfg.RecordedBeforeSymbol, cfg.SkippedSymbol, cfg.OtherAiringSymbol }
             .Where(sym => !string.IsNullOrEmpty(sym) && !used.Contains(sym, StringComparer.Ordinal))
             .Distinct(StringComparer.Ordinal)
             .ToArray();

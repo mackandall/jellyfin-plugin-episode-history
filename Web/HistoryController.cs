@@ -380,6 +380,8 @@ public sealed class HistoryController : ControllerBase
             Watched = cfg.WatchedSymbol,
             InLibrary = cfg.InLibrarySymbol,
             RecordedBefore = cfg.RecordedBeforeSymbol,
+            Skipped = cfg.SkippedSymbol,
+            OtherAiring = cfg.OtherAiringSymbol,
             cfg.EnableGuideMarks
         });
     }
