@@ -31,6 +31,7 @@
   var FORGET_ROW_CLASS = 'episodeHistoryForgetRow';
   var PLAY_ROW_CLASS = 'episodeHistoryPlayRow';
   var INSTEAD_ROW_CLASS = 'episodeHistoryRecordInsteadRow';
+  var FAV_ROW_CLASS = 'episodeHistoryFavouriteRow';
   var PLAY_KEY = 'episodeHistoryPlayItem';
   var lastProgramId = null;
 
@@ -559,8 +560,67 @@
         if (s && s.Outcome && fields.isConnected && !fields.querySelector('.' + INSTEAD_ROW_CLASS)) {
           fields.appendChild(buildInsteadRow(programId, s.Outcome));
         }
+        if (s && fields.isConnected && !fields.querySelector('.' + FAV_ROW_CLASS)) {
+          fields.appendChild(buildFavouriteRow(programId, s.Favourite || null));
+        }
       })
       .catch(function () { /* JellyDVR Schedule not installed, or no Live TV management rights */ });
+  }
+
+  /*
+   * JellyDVR Schedule favourites: "Add to favourites" creates a title rule for this show (records
+   * every episode, any channel, whatever id the guide uses); for a show a favourite already covers,
+   * "Remove from favourites" deletes that rule and cancels the upcoming recordings it scheduled
+   * (second press to confirm).
+   */
+  function buildFavouriteRow(programId, favourite) {
+    var row = buttonRow(FAV_ROW_CLASS);
+    var button = row.querySelector('button');
+    var icon = button.querySelector('.recordingIcon');
+    var text = button.querySelector('.buttonText');
+    var note = document.createElement('div');
+    note.className = 'fieldDescription';
+    note.style.cssText = 'margin:.3em 0 0 .2em;opacity:.8;';
+    row.firstChild.appendChild(note);
+    var armed = false;
+
+    function show(f) {
+      favourite = f;
+      armed = false;
+      icon.className = 'material-icons recordingIcon ' + (f ? 'star' : 'star_border');
+      icon.style.color = f ? '#f5c518' : '';
+      text.textContent = f ? 'Remove from favourites' : 'Add to favourites';
+      if (f) {
+        note.textContent = '★ ' + f.Title + (f.Match === 'keyword' ? ' (keyword)' : '');
+      }
+    }
+    show(favourite);
+
+    button.addEventListener('click', function () {
+      if (favourite) {
+        if (!armed) {
+          armed = true;
+          text.textContent = 'Press again to remove';
+          setTimeout(function () { if (armed) { show(favourite); } }, 4000);
+          return;
+        }
+        button.disabled = true;
+        api('DELETE', 'JellyDvrSchedule/Favourites/' + favourite.Id)
+          .then(function (r) { show(null); note.textContent = (r && r.Message) || ''; })
+          .catch(function () { note.textContent = 'Could not remove it.'; })
+          .then(function () { button.disabled = false; });
+        return;
+      }
+      button.disabled = true;
+      api('POST', 'JellyDvrSchedule/Favourites/FromProgram/' + programId)
+        .then(function (r) {
+          show(r && r.Id ? { Id: r.Id, Title: r.Title, Match: 'title' } : null);
+          note.textContent = (r && r.Message) || '';
+        })
+        .catch(function () { note.textContent = 'Could not add it.'; })
+        .then(function () { button.disabled = false; });
+    });
+    return row;
   }
 
   /*
