@@ -589,7 +589,7 @@
       armed = false;
       icon.className = 'material-icons recordingIcon ' + (f ? 'star' : 'star_border');
       icon.style.color = f ? '#f5c518' : '';
-      text.textContent = f ? 'Remove from favourites' : 'Add to favourites';
+      text.textContent = f ? 'Remove from Recording Favourites' : 'Add to Recording Favourites';
       if (f) {
         note.textContent = '★ ' + f.Title + (f.Match === 'keyword' ? ' (keyword)' : '');
       }
