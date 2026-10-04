@@ -180,6 +180,21 @@ public sealed class RecordingsList
     private static int? Minutes(Video item) =>
         item.RunTimeTicks is > 0 and var t ? (int)Math.Max(1, Math.Round(TimeSpan.FromTicks(t).TotalMinutes)) : null;
 
+    /// <summary>The library items the history counts as recorded (a recording that finished).</summary>
+    public HashSet<Guid> HistoryItemIds() => Resolve().Select(r => r.Item.Id).ToHashSet();
+
+    /// <summary>
+    /// A partial recording: a file in the recordings folders the history never counted (the
+    /// recording didn't finish), not one being recorded now and not a live TV buffer. Unlike the
+    /// list, an episode's other versions count too.
+    /// </summary>
+    public bool IsPartial(Video item, IReadOnlySet<Guid> historyItemIds) =>
+        !string.IsNullOrEmpty(item.Path)
+        && RecordingFiles.IsUnder(item.Path, RecordingFiles.Folders(_recordingsManager))
+        && !historyItemIds.Contains(item.Id)
+        && !LiveBuffers.IsUnkeptBuffer(item)
+        && _recordingsManager.GetActiveRecordingInfo(item.Path) is null;
+
     /// <summary>
     /// Adds the files in the recordings folders that aren't in the history (partial recordings),
     /// unless turned off. Skips recordings still being made, files written in the last few minutes

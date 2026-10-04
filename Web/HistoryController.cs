@@ -279,6 +279,60 @@ public sealed class HistoryController : ControllerBase
     }
 
     /// <summary>
+    /// Deletes a recording (file and the files beside it). A partial recording takes the
+    /// episode's other partial versions with it (the pieces of an interrupted recording,
+    /// which Jellyfin groups as versions), so the episode leaves the library and a series
+    /// recording records it again; a full version is kept. A full recording is deleted alone,
+    /// as Jellyfin does. <paramref name="dryRun"/> only says what would be deleted.
+    /// </summary>
+    [HttpDelete("Item/{itemId}/Recording")]
+    [Authorize]
+    public IActionResult DeleteRecording([FromRoute] Guid itemId, [FromQuery] bool dryRun)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item)
+        {
+            return NotFound();
+        }
+
+        var user = _userManager.GetUserById(CurrentUserId());
+        if (user is null || !item.CanDelete(user))
+        {
+            return Forbid();
+        }
+
+        var targets = new List<Video> { item };
+        var inHistory = _recordings.HistoryItemIds();
+        var partial = _recordings.IsPartial(item, inHistory);
+        if (partial)
+        {
+            targets.AddRange(Versions(item).Where(v => !v.Id.Equals(item.Id) && _recordings.IsPartial(v, inHistory)));
+        }
+
+        if (!dryRun)
+        {
+            // Alternates first: deleting a primary would promote one of them to take its place.
+            foreach (var v in targets.OrderBy(v => v.PrimaryVersionId.HasValue ? 0 : 1))
+            {
+                _libraryManager.DeleteItem(v, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = true }, true);
+            }
+
+            _sweeper.Request("deleted recording", TimeSpan.FromSeconds(1));
+        }
+
+        return Ok(new { Partial = partial, Deleted = dryRun ? 0 : targets.Count, Files = targets.Select(v => System.IO.Path.GetFileName(v.Path)).ToList() });
+    }
+
+    /// <summary>An episode's versions: its primary and the primary's alternates (this one included).</summary>
+    private IEnumerable<Video> Versions(Video item)
+    {
+        var primary = item.PrimaryVersionId is { } p && _libraryManager.GetItemById(p) is Video pv ? pv : item;
+        return new[] { primary }
+            .Concat(_libraryManager.GetLocalAlternateVersionIds(primary).Select(id => _libraryManager.GetItemById(id)).OfType<Video>())
+            .Concat(_libraryManager.GetLinkedAlternateVersions(primary))
+            .DistinctBy(v => v.Id);
+    }
+
+    /// <summary>
     /// Replies with the clicked entry's new episode title (already saved), so the client
     /// can show the mark at once; the episode's other airings follow with the sweep ~1 s later.
     /// </summary>
