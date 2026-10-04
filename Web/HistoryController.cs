@@ -247,6 +247,38 @@ public sealed class HistoryController : ControllerBase
     }
 
     /// <summary>
+    /// "Forget this episode" from a recording (an app's details page): the history no longer
+    /// counts the episode as recorded or watched, for every user, so a series recording
+    /// records it again. A recording still in the library would count it right back, so
+    /// <paramref name="deleteRecording"/> deletes this one first (its file and the files beside
+    /// it). Other copies still in the library are kept; KeptInLibrary says how many.
+    /// </summary>
+    [HttpDelete("Item/{itemId}/History")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public IActionResult ForgetItem([FromRoute] Guid itemId, [FromQuery] bool deleteRecording)
+    {
+        if (_libraryManager.GetItemById(itemId) is not { } item || EpisodeIdentity.FromLibraryItem(item, Marker(), null) is not { } identity)
+        {
+            return NotFound();
+        }
+
+        if (deleteRecording)
+        {
+            _libraryManager.DeleteItem(item, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = true }, true);
+        }
+
+        var matching = _store.LoadAll().Where(r => r.Identity.SameEpisode(identity)).ToList();
+        var forgettable = ForgettableRows(matching);
+        var forgotten = _store.DeleteRows(forgettable.Select(r => r.Id));
+        if (forgotten > 0 || deleteRecording)
+        {
+            _sweeper.Request("forgot episode", TimeSpan.FromSeconds(1));
+        }
+
+        return Ok(new { Forgotten = forgotten, KeptInLibrary = matching.Count - forgettable.Count, Deleted = deleteRecording });
+    }
+
+    /// <summary>
     /// Replies with the clicked entry's new episode title (already saved), so the client
     /// can show the mark at once; the episode's other airings follow with the sweep ~1 s later.
     /// </summary>
