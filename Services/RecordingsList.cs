@@ -269,11 +269,8 @@ public sealed class RecordingsList
             return null;
         }
 
-        var key = series.PresentationUniqueKey;
-        return WithPartials(Resolve())
-            .Where(r => r.Item is Episode e
-                && (e.SeriesId.Equals(seriesId) || (!string.IsNullOrEmpty(key) && string.Equals(e.FindSeriesPresentationUniqueKey(), key, StringComparison.Ordinal)))
-                && r.Item.IsVisible(user))
+        return OfShow(series)
+            .Where(r => r.Item.IsVisible(user))
             .Select(r =>
             {
                 var e = (Episode)r.Item;
@@ -292,6 +289,61 @@ public sealed class RecordingsList
             .ThenByDescending(c => c.Season ?? 0)
             .ThenByDescending(c => c.Episode ?? 0)
             .ToList();
+    }
+
+    /// <summary>
+    /// A show's episode files in the DVR recordings folders, whatever the history says (every
+    /// version; not live TV buffers that aren't kept), for the show's merge key (see
+    /// <see cref="ShowCards"/>). Null when the id isn't a show.
+    /// </summary>
+    public List<Video>? ShowFiles(Guid seriesId)
+    {
+        if (_libraryManager.GetItemById(seriesId) is not Series series)
+        {
+            return null;
+        }
+
+        var folders = RecordingFiles.Folders(_recordingsManager);
+        var key = series.PresentationUniqueKey;
+        var query = new InternalItemsQuery
+        {
+            IncludeItemTypes = new[] { BaseItemKind.Episode },
+            IsVirtualItem = false,
+            Recursive = true
+        };
+        if (string.IsNullOrEmpty(key))
+        {
+            query.AncestorIds = new[] { series.Id };
+        }
+        else
+        {
+            query.SeriesPresentationUniqueKey = key;
+        }
+
+        return _libraryManager.GetItemList(query)
+            .OfType<Episode>()
+            .Where(e => (e.SeriesId.Equals(series.Id) || (!string.IsNullOrEmpty(key) && string.Equals(e.FindSeriesPresentationUniqueKey(), key, StringComparison.Ordinal)))
+                && RecordingFiles.IsUnder(e.Path, folders)
+                && File.Exists(e.Path)
+                && !LiveBuffers.IsUnkeptBuffer(e))
+            .Cast<Video>()
+            .DistinctBy(v => v.Id)
+            .ToList();
+    }
+
+    /// <summary>The DVR recording folders, each with a trailing separator.</summary>
+    public List<string> RecordingFolders() => RecordingFiles.Folders(_recordingsManager);
+
+    /// <summary>Whether the file is being recorded right now.</summary>
+    public bool IsRecordingNow(Video item) =>
+        !string.IsNullOrEmpty(item.Path) && _recordingsManager.GetActiveRecordingInfo(item.Path) is not null;
+
+    private IEnumerable<Recording> OfShow(Series series)
+    {
+        var key = series.PresentationUniqueKey;
+        return WithPartials(Resolve())
+            .Where(r => r.Item is Episode e
+                && (e.SeriesId.Equals(series.Id) || (!string.IsNullOrEmpty(key) && string.Equals(e.FindSeriesPresentationUniqueKey(), key, StringComparison.Ordinal))));
     }
 
     /// <summary>

@@ -691,6 +691,15 @@
     }));
 
     var client = window.ApiClient;
+    if (!single) {
+      showDeleteEntry(id, name, function (label, onClick) {
+        if (box.isConnected) {
+          box.appendChild(menuItem('delete_sweep', label, function () { closeMenu(); onClick(); }));
+        }
+      }, function () {
+        card.parentNode && card.parentNode.removeChild(card);
+      });
+    }
     Promise.resolve(single ? client.getCurrentUser() : null).then(function (user) {
       var policy = user && user.Policy;
       if (!policy || !(policy.EnableContentDeletion || (policy.EnableContentDeletionFromFolders || []).length) || !box.isConnected) {
@@ -738,6 +747,193 @@
       first.focus();
     }
   }
+
+  /*
+   * "Delete all recordings…" for a show: in our own card menu above and in jellyfin-web's "..."
+   * action sheet (a show's card or its page). Offered when the caller may delete at least one of
+   * the show's recordings still in the recordings folders (a dry run says how many); archived
+   * copies are kept. A window asks first, with the count and size.
+   */
+  function seriesDeleteUrl(id, params) {
+    return window.ApiClient.getUrl('EpisodeHistory/Recordings/Series/' + id, params);
+  }
+
+  function dryRun(id) {
+    var client = window.ApiClient;
+    return client.ajax({ type: 'DELETE', url: seriesDeleteUrl(id, { dryRun: true }), dataType: 'json' });
+  }
+
+  function gbText(bytes) {
+    return (bytes / 1073741824).toFixed(bytes >= 100 * 1073741824 ? 0 : 1) + ' GB';
+  }
+
+  function notify(message) {
+    if (window.Dashboard && typeof window.Dashboard.alert === 'function') {
+      window.Dashboard.alert(message);
+    } else {
+      log(message);
+    }
+  }
+
+  // Calls add(label, onClick) when there's something the caller may delete.
+  function showDeleteEntry(id, name, add, onDeleted) {
+    dryRun(id).then(function (r) {
+      if (r && r.Count > 0) {
+        add('Delete all ' + r.Count + ' recording' + (r.Count === 1 ? '' : 's') + '\u2026', function () {
+          // Ask again: something may have finished or been deleted meanwhile.
+          setTimeout(function () {
+            dryRun(id).then(function (fresh) { confirmDelete(id, name, fresh, onDeleted); });
+          }, 150);
+        });
+      }
+    }).catch(function () {});
+  }
+
+  function confirmDelete(id, name, r, onDeleted) {
+    var overlay = el('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;';
+    var box = el('div');
+    box.style.cssText = 'background:#202020;color:#fff;border-radius:10px;max-width:480px;width:100%;padding:1.2em 1.4em;box-shadow:0 8px 40px rgba(0,0,0,.6);';
+    overlay.appendChild(box);
+    function close() {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.parentNode && overlay.parentNode.removeChild(overlay);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape' || e.key === 'Backspace' || e.keyCode === 10009 || e.keyCode === 461) {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      }
+    }
+    var h = el('h2', null, 'Delete all recordings?');
+    h.style.cssText = 'margin:0 0 .5em;font-size:1.3em;font-weight:500;';
+    box.appendChild(h);
+    var p = el('div', null, name + ': ' + r.Count + ' recording' + (r.Count === 1 ? '' : 's') + ' (' + gbText(r.Bytes) + ') in the recordings folders will be deleted from the disk. This can\'t be undone.');
+    p.style.cssText = 'margin-bottom:.6em;line-height:1.4;';
+    box.appendChild(p);
+    var kept = el('div', null, 'Archived copies are kept, and the episodes stay in the history as recorded.'
+      + (r.Skipped ? ' ' + r.Skipped + ' can\'t be deleted now (recording, or not yours to delete) and are left.' : ''));
+    kept.style.cssText = 'opacity:.75;font-size:.9em;margin-bottom:1.1em;line-height:1.4;';
+    box.appendChild(kept);
+
+    var row = el('div');
+    row.style.cssText = 'display:flex;gap:.8em;justify-content:flex-end;';
+    var cancel = el('button', null, 'Cancel');
+    cancel.type = 'button';
+    cancel.style.cssText = 'padding:.55em 1.2em;border-radius:6px;border:0;background:rgba(255,255,255,.12);color:inherit;font:inherit;cursor:pointer;';
+    cancel.addEventListener('click', close);
+    var go = el('button', null, 'Delete ' + r.Count);
+    go.type = 'button';
+    go.style.cssText = 'padding:.55em 1.2em;border-radius:6px;border:0;background:#c62828;color:#fff;font:inherit;cursor:pointer;';
+    go.addEventListener('click', function () {
+      go.disabled = cancel.disabled = true;
+      go.textContent = 'Deleting\u2026';
+      var client = window.ApiClient;
+      client.ajax({ type: 'DELETE', url: seriesDeleteUrl(id), dataType: 'json' }).then(function (done) {
+        close();
+        cache = {};
+        notify('Deleted ' + done.Deleted + ' recording' + (done.Deleted === 1 ? '' : 's') + ' of ' + name + '.'
+          + (done.Skipped ? ' ' + done.Skipped + ' left (recording now, or not yours to delete).' : ''));
+        if (onDeleted) {
+          onDeleted();
+        }
+        scheduleCheck();
+      }, function () {
+        close();
+        notify('Deleting the recordings failed.');
+      });
+    });
+    row.appendChild(cancel);
+    row.appendChild(go);
+    box.appendChild(row);
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) {
+        close();
+      }
+    });
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', onKey, true);
+    cancel.focus();
+  }
+
+  // jellyfin-web's own "..." sheet: the show whose card's menu button (or right-click) opened
+  // it, else the show page's "..." button. The same detection as JellyDVR Space's archive.js.
+  var sheetItemId = null;
+  var sheetClickedAt = 0;
+  function rememberSheetTarget(e, isContextMenu) {
+    var t = e.target;
+    if (!t || !t.closest) {
+      return;
+    }
+    var holder = t.closest('.card[data-id], .listItem[data-id]');
+    if (holder && holder.classList.contains('actionSheetMenuItem')) {
+      return;
+    }
+    if (holder && (isContextMenu || t.closest('[data-action="menu"]'))) {
+      sheetItemId = holder.getAttribute('data-id');
+      sheetClickedAt = Date.now();
+    } else if (t.closest('.btnMoreCommands')) {
+      sheetItemId = null;
+      sheetClickedAt = Date.now();
+    }
+  }
+  document.addEventListener('click', function (e) { rememberSheetTarget(e, false); }, true);
+  document.addEventListener('contextmenu', function (e) { rememberSheetTarget(e, true); }, true);
+
+  function sheetTargetId() {
+    if (sheetItemId && Date.now() - sheetClickedAt < 5000) {
+      return sheetItemId;
+    }
+    var hash = window.location.hash || '';
+    var q = hash.indexOf('?');
+    return hash.indexOf('#/details') === 0 && q !== -1 ? new URLSearchParams(hash.slice(q + 1)).get('id') : null;
+  }
+
+  function injectIntoSheet(scroller) {
+    var id = sheetTargetId();
+    var client = window.ApiClient;
+    if (!id || !client) {
+      return;
+    }
+    client.getItem(client.getCurrentUserId(), id).then(function (item) {
+      if (!item || item.Type !== 'Series') {
+        return;
+      }
+      showDeleteEntry(id, item.Name, function (label, onClick) {
+        if (!scroller.isConnected || scroller.querySelector('[data-id="episodehistory-deleteall"]')) {
+          return;
+        }
+        var b = document.createElement('button');
+        b.setAttribute('is', 'emby-button');
+        b.type = 'button';
+        b.className = 'listItem listItem-button actionSheetMenuItem emby-button';
+        b.setAttribute('data-id', 'episodehistory-deleteall');
+        b.innerHTML = '<span class="actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons delete_sweep" aria-hidden="true"></span>'
+          + '<div class="listItemBody actionsheetListItemBody"><div class="listItemBodyText actionSheetItemText"></div></div>';
+        b.querySelector('.actionSheetItemText').textContent = label;
+        // No stopPropagation: the click bubbling up is what closes the sheet.
+        b.addEventListener('click', onClick);
+        scroller.appendChild(b);
+      });
+    }).catch(function () {});
+  }
+
+  new MutationObserver(function (mutations) {
+    mutations.forEach(function (m) {
+      m.addedNodes.forEach(function (node) {
+        if (node.nodeType !== 1) {
+          return;
+        }
+        var scroller = node.classList && node.classList.contains('actionSheetScroller')
+          ? node
+          : (node.querySelector && node.querySelector('.actionSheetScroller'));
+        if (scroller) {
+          injectIntoSheet(scroller);
+        }
+      });
+    });
+  }).observe(document.body, { childList: true, subtree: true });
 
   document.addEventListener('click', function (e) {
     var button = e.target && e.target.closest && e.target.closest('.episodeHistoryRecordingsItems .cardOverlayButton');

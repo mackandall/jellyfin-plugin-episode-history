@@ -13,6 +13,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.LiveTv;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.EpisodeHistory.Web;
 
@@ -33,6 +34,7 @@ public sealed class HistoryController : ControllerBase
     private readonly IUserDataManager _userDataManager;
     private readonly IMediaSegmentManager _segments;
     private readonly RecordingsList _recordings;
+    private readonly ILogger<HistoryController> _logger;
 
     public HistoryController(
         HistoryStore store,
@@ -43,8 +45,10 @@ public sealed class HistoryController : ControllerBase
         IUserManager userManager,
         IUserDataManager userDataManager,
         IMediaSegmentManager segments,
-        RecordingsList recordings)
+        RecordingsList recordings,
+        ILogger<HistoryController> logger)
     {
+        _logger = logger;
         _recordings = recordings;
         _userManager = userManager;
         _userDataManager = userDataManager;
@@ -320,6 +324,149 @@ public sealed class HistoryController : ControllerBase
         }
 
         return Ok(new { Partial = partial, Deleted = dryRun ? 0 : targets.Count, Files = targets.Select(v => System.IO.Path.GetFileName(v.Path)).ToList() });
+    }
+
+    /// <summary>
+    /// Deletes a show's recordings in one go: every episode file of it in the DVR recordings
+    /// folders (archived copies elsewhere are kept), partial ones and extra versions included.
+    /// Each is checked as a single delete is (the caller may delete it); one being recorded now,
+    /// and a live TV buffer, are left alone. The history keeps them as recorded, as a single
+    /// delete does. <paramref name="dryRun"/> only counts what would go.
+    /// </summary>
+    [HttpDelete("Recordings/Series/{seriesId}")]
+    [Authorize]
+    public IActionResult DeleteSeriesRecordings([FromRoute] Guid seriesId, [FromQuery] bool dryRun)
+    {
+        var user = _userManager.GetUserById(CurrentUserId());
+        if (user is null)
+        {
+            return Unauthorized();
+        }
+
+        var files = _recordings.ShowFiles(seriesId);
+        if (files is null)
+        {
+            return NotFound();
+        }
+
+        var targets = new List<Video>();
+        var skipped = 0;
+        foreach (var v in files)
+        {
+            if (!v.CanDelete(user) || _recordings.IsRecordingNow(v))
+            {
+                skipped++;
+                continue;
+            }
+
+            targets.Add(v);
+        }
+
+        long bytes = targets.Sum(v => v.Size ?? 0);
+        var deleted = 0;
+        if (!dryRun)
+        {
+            // Alternates first: deleting a primary would promote one of them to take its place.
+            foreach (var v in targets.OrderBy(v => v.PrimaryVersionId.HasValue ? 0 : 1))
+            {
+                try
+                {
+                    var path = v.Path;
+                    _libraryManager.DeleteItem(v, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = true }, true);
+                    deleted++;
+                    DeleteSideFiles(path);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Couldn't delete recording {Path}", v.Path);
+                    skipped++;
+                }
+            }
+
+            foreach (var dir in targets.Select(v => ShowFolder(v.Path)).OfType<string>().Distinct())
+            {
+                RemoveIfNoVideos(dir);
+            }
+
+            _logger.LogInformation("Deleted {Deleted} recordings of series {SeriesId} ({Skipped} left)", deleted, seriesId, skipped);
+            _sweeper.Request("deleted recordings", TimeSpan.FromSeconds(1));
+        }
+
+        return Ok(new { Count = targets.Count, Bytes = bytes, Skipped = skipped, Deleted = deleted });
+    }
+
+    private static readonly string[] SideExtensions = { ".nfo", ".edl", ".txt", ".log", ".xml", ".jpg", ".png", ".srt" };
+
+    /// <summary>What Jellyfin and Comskip leave next to a recording: its .nfo, -thumb.jpg, .edl and so on.</summary>
+    private void DeleteSideFiles(string? videoPath)
+    {
+        var dir = System.IO.Path.GetDirectoryName(videoPath);
+        if (dir is null || !System.IO.Directory.Exists(dir))
+        {
+            return;
+        }
+
+        var stem = System.IO.Path.GetFileNameWithoutExtension(videoPath)!;
+        foreach (var f in System.IO.Directory.EnumerateFiles(dir))
+        {
+            var name = System.IO.Path.GetFileName(f);
+            var ext = System.IO.Path.GetExtension(name);
+            var rest = System.IO.Path.GetFileNameWithoutExtension(name);
+            if (SideExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)
+                && (rest == stem || rest == stem + "-thumb"))
+            {
+                try
+                {
+                    System.IO.File.Delete(f);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Couldn't delete {File}", f);
+                }
+            }
+        }
+    }
+
+    /// <summary>The show's folder in the recordings folders: the recording's folder, or its parent for a "Season N" folder.</summary>
+    private static string? ShowFolder(string? videoPath)
+    {
+        var dir = System.IO.Path.GetDirectoryName(videoPath);
+        if (dir is not null && System.IO.Path.GetFileName(dir).StartsWith("Season", StringComparison.OrdinalIgnoreCase))
+        {
+            dir = System.IO.Path.GetDirectoryName(dir);
+        }
+
+        return dir;
+    }
+
+    /// <summary>
+    /// Removes a show's folder once no video is left anywhere in it (only tvshow.nfo, artwork and
+    /// empty season folders). Never a recordings folder itself.
+    /// </summary>
+    private void RemoveIfNoVideos(string dir)
+    {
+        try
+        {
+            var roots = _recordings.RecordingFolders();
+            var trimmed = System.IO.Path.TrimEndingDirectorySeparator(dir) + System.IO.Path.DirectorySeparatorChar;
+            if (!System.IO.Directory.Exists(dir) || roots.Contains(trimmed) || !roots.Any(r => trimmed.StartsWith(r, StringComparison.Ordinal)))
+            {
+                return;
+            }
+
+            var left = System.IO.Directory.EnumerateFiles(dir, "*", System.IO.SearchOption.AllDirectories)
+                .Where(f => !SideExtensions.Contains(System.IO.Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            if (left.Count == 0)
+            {
+                System.IO.Directory.Delete(dir, true);
+                _logger.LogInformation("Removed the emptied show folder {Folder}", dir);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Couldn't remove the show folder {Folder}", dir);
+        }
     }
 
     /// <summary>An episode's versions: its primary and the primary's alternates (this one included).</summary>
