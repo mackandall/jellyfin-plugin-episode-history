@@ -29,6 +29,7 @@
 
   var ROW_CLASS = 'episodeHistoryWatchedRow';
   var FORGET_ROW_CLASS = 'episodeHistoryForgetRow';
+  var FORGET_SHOW_ROW_CLASS = 'episodeHistoryForgetShowRow';
   var PLAY_ROW_CLASS = 'episodeHistoryPlayRow';
   var INSTEAD_ROW_CLASS = 'episodeHistoryRecordInsteadRow';
   var FAV_ROW_CLASS = 'episodeHistoryFavouriteRow';
@@ -164,6 +165,53 @@
     });
 
     return row;
+  }
+
+  /*
+   * "Forget this show" (admins, when the history holds something of the show): the same for
+   * every episode of the show, so a series recording records them all again (with "skip
+   * watched episodes" on, watched ones included). Two taps, as above.
+   */
+  function addForgetShowRow(fields, programId) {
+    api('DELETE', 'EpisodeHistory/Item/' + programId + '/ShowHistory?dryRun=true').then(function (r) {
+      if (!r || !r.Episodes || !fields.isConnected || fields.querySelector('.' + FORGET_SHOW_ROW_CLASS)) {
+        return;
+      }
+      var label = 'Forget this show (' + r.Episodes + ' episode' + (r.Episodes === 1 ? '' : 's') + ')';
+      var row = buttonRow(FORGET_SHOW_ROW_CLASS);
+      var button = row.querySelector('button');
+      var text = button.querySelector('.buttonText');
+      button.querySelector('.recordingIcon').className = 'material-icons recordingIcon history';
+      text.textContent = label;
+      var armed = false;
+      var disarmTimer = null;
+      button.addEventListener('click', function () {
+        if (!armed) {
+          armed = true;
+          text.textContent = 'Press again: forget all of ' + r.Show;
+          disarmTimer = setTimeout(function () {
+            armed = false;
+            text.textContent = label;
+          }, 4000);
+          return;
+        }
+        clearTimeout(disarmTimer);
+        button.disabled = true;
+        api('DELETE', 'EpisodeHistory/Item/' + programId + '/ShowHistory').then(function (done) {
+          var watchedButton = document.querySelector('.' + ROW_CLASS + ' button');
+          if (watchedButton) {
+            setButton(watchedButton, false);
+          }
+          text.textContent = 'Forgotten' + (done && done.KeptInLibrary ? ' (copies still in library count)' : '');
+        }).catch(function () {
+          log('forgetting the show of program ' + programId + ' failed');
+          button.disabled = false;
+          armed = false;
+          text.textContent = label;
+        });
+      });
+      fields.appendChild(row);
+    }).catch(function () {});
   }
 
   function showForgetRow(fields, programId, show) {
@@ -548,6 +596,8 @@
         }
         fields.appendChild(buildRow(programId, !!(info && info.MarkedWatched)));
         showForgetRow(fields, programId, !!(info && info.CanForget));
+        // Administrators only: for anyone else the dry run is refused and nothing is added.
+        addForgetShowRow(fields, programId);
       })
       .catch(function () {
         log('Episode History plugin not available for program ' + programId);

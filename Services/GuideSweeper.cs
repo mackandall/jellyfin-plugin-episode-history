@@ -306,8 +306,16 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                     continue;
                 }
 
-                if (GetProgram(timer.ProgramId) is not { } program
-                    || !index.Evaluate(EpisodeIdentity.FromProgram(program, marker)).InLibrary)
+                if (GetProgram(timer.ProgramId) is not { } program)
+                {
+                    continue;
+                }
+
+                var state = index.Evaluate(EpisodeIdentity.FromProgram(program, marker));
+                var skipReason = state.InLibrary ? "episode already in library"
+                    : cfg.SkipWatchedEpisodes && state.Watched ? "episode already watched"
+                    : null;
+                if (skipReason is null)
                 {
                     continue;
                 }
@@ -315,10 +323,10 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                 var title = HistoryEvents.Describe(program.Name, marker.Strip(program.EpisodeTitle));
                 await _liveTvManager.CancelTimer(timer.Id).ConfigureAwait(false);
                 await DisarmAsync(timer, cancellationToken).ConfigureAwait(false);
-                _store.AddCancelled(timer.Id, title, "episode already in library");
+                _store.AddCancelled(timer.Id, title, skipReason);
                 cancelledIds.Add(timer.Id);
                 cancelled.Add(title + " @ " + timer.StartDate.ToLocalTime().ToString("g", System.Globalization.CultureInfo.CurrentCulture));
-                _logger.LogInformation("Cancelled series recording of {Title} at {Start:u}: episode already in library", title, timer.StartDate);
+                _logger.LogInformation("Cancelled series recording of {Title} at {Start:u}: {Reason}", title, timer.StartDate, skipReason);
             }
         }
 

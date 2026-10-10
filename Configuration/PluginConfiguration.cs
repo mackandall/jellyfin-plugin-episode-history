@@ -30,6 +30,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool EnableDuplicateSkipping { get; set; } = true;
 
     /// <summary>
+    /// With duplicate skipping: also cancel a series recording's upcoming episode that someone
+    /// on this server has already watched (whether or not a copy is still in the library).
+    /// "Forget this episode" / "Forget this show" make it record again.
+    /// </summary>
+    public bool SkipWatchedEpisodes { get; set; } = true;
+
+    /// <summary>
     /// Mark guide entries JellyDVR Schedule took off the schedule: skipped for a tuner conflict,
     /// or recorded at another airing instead (moved, or a duplicate dropped).
     /// </summary>

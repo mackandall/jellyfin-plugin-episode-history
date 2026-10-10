@@ -283,6 +283,49 @@ public sealed class HistoryController : ControllerBase
     }
 
     /// <summary>
+    /// "Forget this show": what <see cref="Forget"/> does for one episode, for every episode of
+    /// the show <paramref name="itemId"/> belongs to (a show, an episode or recording of it, or a
+    /// guide entry of it), matched by the show's name. Rows of recordings still in the library
+    /// are kept (KeptInLibrary). <paramref name="dryRun"/> only counts. Movies aren't shows.
+    /// </summary>
+    [HttpDelete("Item/{itemId}/ShowHistory")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public IActionResult ForgetShow([FromRoute] Guid itemId, [FromQuery] bool dryRun)
+    {
+        var name = _libraryManager.GetItemById(itemId) switch
+        {
+            MediaBrowser.Controller.Entities.TV.Series s => s.Name,
+            MediaBrowser.Controller.Entities.TV.Episode e => e.SeriesName,
+            LiveTvProgram p when p.IsMovie != true => p.Name,
+            _ => null
+        };
+        var key = EpisodeIdentity.Normalize(name);
+        if (key.Length == 0)
+        {
+            return NotFound();
+        }
+
+        var matching = _store.LoadAll()
+            .Where(r => !r.Identity.IsMovie
+                && (EpisodeIdentity.Normalize(r.Identity.SeriesName) == key || EpisodeIdentity.Normalize(r.Identity.SeriesAlt) == key))
+            .ToList();
+        var forgettable = ForgettableRows(matching);
+        var episodes = forgettable.Select(r => (r.Identity.Season, r.Identity.Episode, EpisodeIdentity.Normalize(r.Identity.EpisodeTitle))).Distinct().Count();
+        var forgotten = 0;
+        if (!dryRun)
+        {
+            forgotten = _store.DeleteRows(forgettable.Select(r => r.Id));
+            if (forgotten > 0)
+            {
+                _logger.LogInformation("Forgot {Rows} history rows of {Show}", forgotten, name);
+                _sweeper.Request("forgot show", TimeSpan.FromSeconds(1));
+            }
+        }
+
+        return Ok(new { Show = name, Rows = forgettable.Count, Episodes = episodes, Forgotten = forgotten, KeptInLibrary = matching.Count - forgettable.Count });
+    }
+
+    /// <summary>
     /// Deletes a recording (file and the files beside it). A partial recording takes the
     /// episode's other partial versions with it (the pieces of an interrupted recording,
     /// which Jellyfin groups as versions), so the episode leaves the library and a series

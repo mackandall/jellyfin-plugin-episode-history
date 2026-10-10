@@ -72,6 +72,17 @@
                             a recording re-enabled by hand is left alone.
                         </div>
                     </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="SkipWatchedEpisodes" type="checkbox" is="emby-checkbox" />
+                            <span>Also skip episodes already watched</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            With the option above: also cancels an upcoming series-recording episode anyone on this
+                            server has watched, even after its recording was deleted. "Forget this episode" or
+                            "Forget this show" (guide and recording menus) make it record again.
+                        </div>
+                    </div>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
@@ -349,6 +360,7 @@
                     ApiClient.getPluginConfiguration(pluginUniqueId).then(function (config) {
                         page.querySelector("#EnableGuideMarks").checked = config.EnableGuideMarks;
                         page.querySelector("#EnableDuplicateSkipping").checked = config.EnableDuplicateSkipping;
+                        page.querySelector("#SkipWatchedEpisodes").checked = config.SkipWatchedEpisodes !== false;
                         page.querySelector("#MinRecordedPercent").value = config.MinRecordedPercent;
                         page.querySelector("#CountAllLibraries").checked = config.CountAllLibraries;
                         page.querySelector("#MinRecordingMinutes").value = config.MinRecordingMinutes;
@@ -469,6 +481,7 @@
                     ApiClient.getPluginConfiguration(pluginUniqueId).then(function (config) {
                         config.EnableGuideMarks = page.querySelector("#EnableGuideMarks").checked;
                         config.EnableDuplicateSkipping = page.querySelector("#EnableDuplicateSkipping").checked;
+                        config.SkipWatchedEpisodes = page.querySelector("#SkipWatchedEpisodes").checked;
                         config.MinRecordedPercent = parseInt(page.querySelector("#MinRecordedPercent").value, 10) || 0;
                         config.CountAllLibraries = page.querySelector("#CountAllLibraries").checked;
                         config.MinRecordingMinutes = parseInt(page.querySelector("#MinRecordingMinutes").value, 10) || 0;
