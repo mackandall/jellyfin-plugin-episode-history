@@ -294,9 +294,10 @@ public sealed class RecordingsList
     /// <summary>
     /// A show's episode files in the DVR recordings folders, whatever the history says (every
     /// version; not live TV buffers that aren't kept), for the show's merge key (see
-    /// <see cref="ShowCards"/>). Null when the id isn't a show.
+    /// <see cref="ShowCards"/>). With <paramref name="archive"/>, its episode files everywhere
+    /// else in the libraries instead (the archive copies). Null when the id isn't a show.
     /// </summary>
-    public List<Video>? ShowFiles(Guid seriesId)
+    public List<Video>? ShowFiles(Guid seriesId, bool archive = false)
     {
         if (_libraryManager.GetItemById(seriesId) is not Series series)
         {
@@ -320,15 +321,25 @@ public sealed class RecordingsList
             query.SeriesPresentationUniqueKey = key;
         }
 
+        // The query gives one item per episode; its other versions (the pieces of an interrupted
+        // recording, a second copy) are files of their own, here or in another folder.
         return _libraryManager.GetItemList(query)
             .OfType<Episode>()
-            .Where(e => (e.SeriesId.Equals(series.Id) || (!string.IsNullOrEmpty(key) && string.Equals(e.FindSeriesPresentationUniqueKey(), key, StringComparison.Ordinal)))
-                && RecordingFiles.IsUnder(e.Path, folders)
-                && File.Exists(e.Path)
-                && !LiveBuffers.IsUnkeptBuffer(e))
-            .Cast<Video>()
+            .Where(e => e.SeriesId.Equals(series.Id) || (!string.IsNullOrEmpty(key) && string.Equals(e.FindSeriesPresentationUniqueKey(), key, StringComparison.Ordinal)))
+            .SelectMany(Versions)
+            .Where(v => RecordingFiles.IsUnder(v.Path, folders) != archive
+                && File.Exists(v.Path)
+                && !LiveBuffers.IsUnkeptBuffer(v))
             .DistinctBy(v => v.Id)
             .ToList();
+    }
+
+    /// <summary>An episode's versions: its primary and the primary's alternates (this one included).</summary>
+    private IEnumerable<Video> Versions(Video item)
+    {
+        var primary = item.PrimaryVersionId is { } p && _libraryManager.GetItemById(p) is Video pv ? pv : item;
+        return new[] { primary, item }
+            .Concat(_libraryManager.GetLocalAlternateVersionIds(primary).Select(id => _libraryManager.GetItemById(id)).OfType<Video>());
     }
 
     /// <summary>The DVR recording folders, each with a trailing separator.</summary>

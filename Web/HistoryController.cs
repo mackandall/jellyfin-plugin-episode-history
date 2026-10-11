@@ -375,10 +375,12 @@ public sealed class HistoryController : ControllerBase
     /// Each is checked as a single delete is (the caller may delete it); one being recorded now,
     /// and a live TV buffer, are left alone. The history keeps them as recorded, as a single
     /// delete does. <paramref name="dryRun"/> only counts what would go.
+    /// With <paramref name="archive"/> it is the other way round: the show's episode files
+    /// outside the recordings folders (the archive copies) go, and its recordings are kept.
     /// </summary>
     [HttpDelete("Recordings/Series/{seriesId}")]
     [Authorize]
-    public IActionResult DeleteSeriesRecordings([FromRoute] Guid seriesId, [FromQuery] bool dryRun)
+    public IActionResult DeleteSeriesRecordings([FromRoute] Guid seriesId, [FromQuery] bool dryRun, [FromQuery] bool archive)
     {
         var user = _userManager.GetUserById(CurrentUserId());
         if (user is null)
@@ -386,7 +388,7 @@ public sealed class HistoryController : ControllerBase
             return Unauthorized();
         }
 
-        var files = _recordings.ShowFiles(seriesId);
+        var files = _recordings.ShowFiles(seriesId, archive);
         if (files is null)
         {
             return NotFound();
@@ -426,17 +428,41 @@ public sealed class HistoryController : ControllerBase
                 }
             }
 
+            // The shows these were in, before their folders go: an emptied one leaves the library
+            // with its folder (Jellyfin only notices by itself where it can watch the folder).
+            var shows = targets.OfType<MediaBrowser.Controller.Entities.TV.Episode>().Select(e => e.Series).OfType<MediaBrowser.Controller.Entities.TV.Series>().DistinctBy(x => x.Id).ToList();
             foreach (var dir in targets.Select(v => ShowFolder(v.Path)).OfType<string>().Distinct())
             {
-                RemoveIfNoVideos(dir);
+                if (RemoveIfNoVideos(dir, archive))
+                {
+                    foreach (var show in shows.Where(x => string.Equals(System.IO.Path.TrimEndingDirectorySeparator(x.Path ?? string.Empty), System.IO.Path.TrimEndingDirectorySeparator(dir), StringComparison.Ordinal)))
+                    {
+                        try
+                        {
+                            _libraryManager.DeleteItem(show, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = false }, true);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Couldn't remove the emptied show {Name} from the library", show.Name);
+                        }
+                    }
+                }
             }
 
-            _logger.LogInformation("Deleted {Deleted} recordings of series {SeriesId} ({Skipped} left)", deleted, seriesId, skipped);
+            _logger.LogInformation("Deleted {Deleted} {What} of series {SeriesId} ({Skipped} left)", deleted, archive ? "archive copies" : "recordings", seriesId, skipped);
             _sweeper.Request("deleted recordings", TimeSpan.FromSeconds(1));
         }
 
-        return Ok(new { Count = targets.Count, Bytes = bytes, Skipped = skipped, Deleted = deleted });
+        return Ok(new { Count = targets.Count, Bytes = bytes, Skipped = skipped, Deleted = deleted, Places = Places(targets) });
     }
+
+    /// <summary>Where files are, for a confirmation: the folder under /mnt (or the like) each is in.</summary>
+    private static List<string> Places(IEnumerable<Video> files) =>
+        files.Select(v => (v.Path ?? string.Empty).Split('/', StringSplitOptions.RemoveEmptyEntries))
+            .Select(p => p.Length > 2 && p[0] is "mnt" or "media" or "srv" ? p[1] : p.Length > 1 ? p[0] : null)
+            .OfType<string>()
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
     private static readonly string[] SideExtensions = { ".nfo", ".edl", ".txt", ".log", ".xml", ".jpg", ".png", ".srt" };
 
@@ -484,17 +510,23 @@ public sealed class HistoryController : ControllerBase
 
     /// <summary>
     /// Removes a show's folder once no video is left anywhere in it (only tvshow.nfo, artwork and
-    /// empty season folders). Never a recordings folder itself.
+    /// empty season folders); true when it went. Never a recordings folder itself, nor, for an
+    /// <paramref name="archive"/> show, a library's own folder.
     /// </summary>
-    private void RemoveIfNoVideos(string dir)
+    private bool RemoveIfNoVideos(string dir, bool archive)
     {
         try
         {
-            var roots = _recordings.RecordingFolders();
+            var roots = archive
+                ? _libraryManager.GetVirtualFolders()
+                    .SelectMany(f => f.Locations ?? Array.Empty<string>())
+                    .Select(p => System.IO.Path.TrimEndingDirectorySeparator(p) + System.IO.Path.DirectorySeparatorChar)
+                    .ToList()
+                : _recordings.RecordingFolders();
             var trimmed = System.IO.Path.TrimEndingDirectorySeparator(dir) + System.IO.Path.DirectorySeparatorChar;
             if (!System.IO.Directory.Exists(dir) || roots.Contains(trimmed) || !roots.Any(r => trimmed.StartsWith(r, StringComparison.Ordinal)))
             {
-                return;
+                return false;
             }
 
             var left = System.IO.Directory.EnumerateFiles(dir, "*", System.IO.SearchOption.AllDirectories)
@@ -504,12 +536,15 @@ public sealed class HistoryController : ControllerBase
             {
                 System.IO.Directory.Delete(dir, true);
                 _logger.LogInformation("Removed the emptied show folder {Folder}", dir);
+                return true;
             }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Couldn't remove the show folder {Folder}", dir);
         }
+
+        return false;
     }
 
     /// <summary>An episode's versions: its primary and the primary's alternates (this one included).</summary>
