@@ -92,6 +92,14 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Include movie recordings (they already have their own library rows).</summary>
     public bool RecordingsRowIncludeMovies { get; set; }
 
+    /// <summary>
+    /// Also list the recordings in Live TV's general recording folder: programmes whose guide data
+    /// has no season and episode (Jellyfin files those as movies, in a library of its own that
+    /// may be hidden), which would otherwise show nowhere. Each is its own card, with when it
+    /// was recorded.
+    /// </summary>
+    public bool RecordingsRowIncludeOther { get; set; } = true;
+
     /// <summary>Most cards in the row.</summary>
     public int RecordingsRowLimit { get; set; } = 24;
 

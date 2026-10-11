@@ -166,6 +166,17 @@
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
+                            <input id="RecordingsRowIncludeOther" type="checkbox" is="emby-checkbox" />
+                            <span>Include recordings without episode information</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Programmes whose guide has no season and episode land in Live TV's general recording folder,
+                            which Jellyfin may not show in any library. Each gets a card here, with when it was recorded.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
                             <input id="ShowInProgressRecordings" type="checkbox" is="emby-checkbox" />
                             <span>Show recordings in progress (marked "Recording")</span>
                         </label>
@@ -387,6 +398,7 @@
                         page.querySelector("#RecordingsRowDefaultFilter").value = config.RecordingsRowDefaultFilter || "all";
                         page.querySelector("#RecordingsRowGroupByShow").checked = config.RecordingsRowGroupByShow;
                         page.querySelector("#RecordingsRowIncludeMovies").checked = config.RecordingsRowIncludeMovies;
+                        page.querySelector("#RecordingsRowIncludeOther").checked = config.RecordingsRowIncludeOther !== false;
                         page.querySelector("#ShowPartialRecordings").checked = config.ShowPartialRecordings !== false;
                         page.querySelector("#ShowInProgressRecordings").checked = config.ShowInProgressRecordings !== false;
                         page.querySelector("#RecordingsRowLimit").value = config.RecordingsRowLimit;
@@ -509,6 +521,7 @@
                         config.RecordingsRowDefaultFilter = page.querySelector("#RecordingsRowDefaultFilter").value;
                         config.RecordingsRowGroupByShow = page.querySelector("#RecordingsRowGroupByShow").checked;
                         config.RecordingsRowIncludeMovies = page.querySelector("#RecordingsRowIncludeMovies").checked;
+                        config.RecordingsRowIncludeOther = page.querySelector("#RecordingsRowIncludeOther").checked;
                         config.ShowPartialRecordings = page.querySelector("#ShowPartialRecordings").checked;
                         config.ShowInProgressRecordings = page.querySelector("#ShowInProgressRecordings").checked;
                         config.RecordingsRowLimit = parseInt(page.querySelector("#RecordingsRowLimit").value, 10) || 24;

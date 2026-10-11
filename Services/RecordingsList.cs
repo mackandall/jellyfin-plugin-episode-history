@@ -130,10 +130,15 @@ public sealed class RecordingsList
     /// <summary>The row's cards for one user.</summary>
     public List<Card> Cards(User user, string filter, bool groupByShow, bool includeMovies, int limit)
     {
+        // Programmes without season and episode: movies as far as Jellyfin goes, listed whatever
+        // the movies choice is (their library may be hidden, so this can be the only place).
+        var other = Plugin.Instance?.Configuration is { RecordingsRowIncludeOther: false }
+            ? new List<string>()
+            : RecordingFiles.OtherFolders(_recordingsManager);
         var recordings = WithPartials(Resolve())
             .OrderByDescending(r => r.Row.EventUtc)
             .Where(r => r.Item.IsVisible(user))
-            .Where(r => includeMovies || r.Item is not Movie)
+            .Where(r => includeMovies || r.Item is not Movie || RecordingFiles.IsUnder(r.Item.Path, other))
             .Where(r => filter switch
             {
                 FilterCurrent => !r.Archived,
@@ -164,7 +169,7 @@ public sealed class RecordingsList
             }
         }
 
-        return groups.Take(Math.Clamp(limit, 1, 200)).Select(g => ToCard(g, user)).ToList();
+        return groups.Take(Math.Clamp(limit, 1, 200)).Select(g => ToCard(g, user, other)).ToList();
     }
 
     /// <summary>One recording on a show's page.</summary>
@@ -412,7 +417,7 @@ public sealed class RecordingsList
         return r.Row.EventUtc;
     }
 
-    private Card ToCard(List<Recording> group, User user)
+    private Card ToCard(List<Recording> group, User user, IReadOnlyList<string> otherFolders)
     {
         var newest = group[0];
         int unplayed = group.Count(r => _userDataManager.GetUserData(user, r.Item)?.Played != true);
@@ -437,7 +442,10 @@ public sealed class RecordingsList
         }
 
         var item = newest.Item;
-        var subtitle = item is Movie ? item.ProductionYear?.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+        // A programme without episode information: told apart by when it was recorded (server time).
+        var subtitle = RecordingFiles.IsUnder(item.Path, otherFolders)
+            ? RecordedAt(newest).ToLocalTime().ToString("MMM d, h:mm tt", System.Globalization.CultureInfo.InvariantCulture)
+            : item is Movie ? item.ProductionYear?.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
         return new Card(item is Movie ? "Movie" : "Video", item.Id, item.Id, item.Name, subtitle, 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes, recording);
     }
 

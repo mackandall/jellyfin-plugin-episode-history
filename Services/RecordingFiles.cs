@@ -21,6 +21,17 @@ internal static class RecordingFiles
             .Select(p => Path.TrimEndingDirectorySeparator(p) + Path.DirectorySeparatorChar)
             .ToList();
 
+    /// <summary>
+    /// Live TV's general recording folders (not the movie or series ones), each with a trailing
+    /// separator: where programmes without season and episode land.
+    /// </summary>
+    public static List<string> OtherFolders(IRecordingsManager recordingsManager) =>
+        recordingsManager.GetRecordingFolders()
+            .Where(f => f.CollectionType is null)
+            .SelectMany(f => f.Locations)
+            .Select(p => Path.TrimEndingDirectorySeparator(p) + Path.DirectorySeparatorChar)
+            .ToList();
+
     public static bool IsUnder(string? path, IReadOnlyList<string> folders) =>
         !string.IsNullOrEmpty(path) && folders.Any(f => path.StartsWith(f, StringComparison.Ordinal));
 
