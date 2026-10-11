@@ -277,6 +277,11 @@
       html += '<div class="episodeHistoryArchivedChip" title="' + (all ? 'Archived' : c.archived + ' of ' + c.count + ' archived') + '">'
         + '<span class="material-icons inventory_2" aria-hidden="true"></span><span>' + (all ? 'Archived' : c.archived) + '</span></div>';
     }
+    // Still being recorded.
+    if (c.recording > 0) {
+      html += '<div class="episodeHistoryRecordingChip" title="Recording now">'
+        + '<span class="material-icons fiber_manual_record" aria-hidden="true"></span><span>Recording</span></div>';
+    }
     // A file that doesn't count as recorded (cut short, failed stub): marked so it's easy to delete.
     if (c.partial > 0) {
       var single = c.count === 1;
@@ -353,7 +358,7 @@
       return cardHtml({
         id: c.Id, type: c.Type, name: c.Name, subtitle: c.Subtitle, image: imageUrl(c.ImageId),
         count: c.Count, unplayed: c.UnplayedCount, played: c.UnplayedCount === 0, archived: c.ArchivedCount,
-        partial: c.PartialCount || 0, partialMinutes: c.PartialMinutes
+        partial: c.PartialCount || 0, partialMinutes: c.PartialMinutes, recording: c.RecordingCount || 0
       });
     }).join('');
   }
@@ -401,6 +406,9 @@
       '.episodeHistoryPartialChip { position: absolute; right: .4em; bottom: .4em; display: flex; align-items: center; gap: .15em;',
       '  background: #f59e0b; color: #1a1a1a; font-weight: 600; border-radius: .3em; padding: .1em .35em; font-size: .8em; }',
       '.episodeHistoryPartialChip .material-icons { font-size: 1.2em; }',
+      '.episodeHistoryRecordingChip { position: absolute; right: .4em; top: .4em; display: flex; align-items: center; gap: .15em;',
+      '  background: #c62828; color: #fff; font-weight: 600; border-radius: .3em; padding: .1em .35em; font-size: .8em; }',
+      '.episodeHistoryRecordingChip .material-icons { font-size: 1em; }',
       '.' + SHOW_CLASS + ' .episodeHistoryRecordingsItems { padding-left: 0; }'
     ].join('\n');
     document.head.appendChild(style);
@@ -523,7 +531,7 @@
         id: r.Id, type: 'Episode', shape: 'backdrop', name: r.Name, subtitle: recordedDate(r.RecordedUtc),
         image: window.ApiClient.getImageUrl(r.Id, { type: 'Primary', fillWidth: 480, fillHeight: 270, quality: 96 }),
         count: 1, unplayed: r.Played ? 0 : 1, played: r.Played, archived: r.Archived ? 1 : 0,
-        partial: r.Partial ? 1 : 0, partialMinutes: r.Minutes
+        partial: r.Partial ? 1 : 0, partialMinutes: r.Minutes, recording: r.Recording ? 1 : 0
       });
     }).join('');
     section.appendChild(scroller);

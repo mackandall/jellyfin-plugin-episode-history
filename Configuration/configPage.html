@@ -166,6 +166,17 @@
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
+                            <input id="ShowInProgressRecordings" type="checkbox" is="emby-checkbox" />
+                            <span>Show recordings in progress (marked "Recording")</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            A recording is listed as soon as it starts, not only once it has finished. Live TV buffers
+                            that aren't kept stay out.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
                             <input id="ShowPartialRecordings" type="checkbox" is="emby-checkbox" />
                             <span>Show partial recordings (marked "Partial")</span>
                         </label>
@@ -377,6 +388,7 @@
                         page.querySelector("#RecordingsRowGroupByShow").checked = config.RecordingsRowGroupByShow;
                         page.querySelector("#RecordingsRowIncludeMovies").checked = config.RecordingsRowIncludeMovies;
                         page.querySelector("#ShowPartialRecordings").checked = config.ShowPartialRecordings !== false;
+                        page.querySelector("#ShowInProgressRecordings").checked = config.ShowInProgressRecordings !== false;
                         page.querySelector("#RecordingsRowLimit").value = config.RecordingsRowLimit;
                         page.querySelector("#RecordingsTabMode").value = config.RecordingsTabMode || "replace";
                         page.querySelector("#RecordingsTabLimit").value = config.RecordingsTabLimit;
@@ -498,6 +510,7 @@
                         config.RecordingsRowGroupByShow = page.querySelector("#RecordingsRowGroupByShow").checked;
                         config.RecordingsRowIncludeMovies = page.querySelector("#RecordingsRowIncludeMovies").checked;
                         config.ShowPartialRecordings = page.querySelector("#ShowPartialRecordings").checked;
+                        config.ShowInProgressRecordings = page.querySelector("#ShowInProgressRecordings").checked;
                         config.RecordingsRowLimit = parseInt(page.querySelector("#RecordingsRowLimit").value, 10) || 24;
                         config.RecordingsTabMode = page.querySelector("#RecordingsTabMode").value;
                         config.RecordingsTabLimit = parseInt(page.querySelector("#RecordingsTabLimit").value, 10) || 200;

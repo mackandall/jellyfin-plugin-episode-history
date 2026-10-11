@@ -61,8 +61,9 @@ public sealed class RecordingsList
     /// A recording that is in the library now. <paramref name="Partial"/>: a file in the recordings
     /// folders that doesn't count as recorded (cut short, a failed stub); listed so it can be found
     /// and deleted, but never part of the history (guide marks, duplicate skipping).
+    /// <paramref name="InProgress"/>: still being recorded; it joins the history when it finishes.
     /// </summary>
-    public sealed record Recording(HistoryStore.RecordedRow Row, Video Item, bool Archived, bool Partial = false);
+    public sealed record Recording(HistoryStore.RecordedRow Row, Video Item, bool Archived, bool Partial = false, bool InProgress = false);
 
     /// <summary>One card of the row: a show (several recordings), an episode, or a movie.</summary>
     public sealed record Card(
@@ -76,7 +77,8 @@ public sealed class RecordingsList
         int ArchivedCount,
         DateTime RecordedUtc,
         int PartialCount = 0,
-        int? PartialMinutes = null);
+        int? PartialMinutes = null,
+        int RecordingCount = 0);
 
     /// <summary>
     /// Every recording still in the library, newest first. Records file names of rows that
@@ -175,7 +177,8 @@ public sealed class RecordingsList
         bool Archived,
         DateTime RecordedUtc,
         bool Partial = false,
-        int? Minutes = null);
+        int? Minutes = null,
+        bool Recording = false);
 
     private static int? Minutes(Video item) =>
         item.RunTimeTicks is > 0 and var t ? (int)Math.Max(1, Math.Round(TimeSpan.FromTicks(t).TotalMinutes)) : null;
@@ -196,21 +199,24 @@ public sealed class RecordingsList
         && _recordingsManager.GetActiveRecordingInfo(item.Path) is null;
 
     /// <summary>
-    /// Adds the files in the recordings folders that aren't in the history (partial recordings),
-    /// unless turned off. Skips recordings still being made, files written in the last few minutes
-    /// (a finished recording is added to the history shortly after it lands), and unkept live TV
-    /// buffers.
+    /// Adds the files in the recordings folders that aren't in the history: recordings still being
+    /// made (marked in progress) and partial recordings, each unless turned off. Skips files
+    /// written in the last few minutes that aren't being recorded (a finished recording is added
+    /// to the history shortly after it lands), and unkept live TV buffers.
     /// </summary>
     private List<Recording> WithPartials(List<Recording> recordings)
     {
         var cfg = Plugin.Instance?.Configuration;
-        if (cfg is { ShowPartialRecordings: false })
+        var partials = cfg is not { ShowPartialRecordings: false };
+        var inProgress = cfg is not { ShowInProgressRecordings: false };
+        if (!partials && !inProgress)
         {
             return recordings;
         }
 
         var known = recordings.Select(r => r.Item.Id).ToHashSet();
-        var settled = DateTime.UtcNow - TimeSpan.FromMinutes(5);
+        var now = DateTime.UtcNow;
+        var settled = now - TimeSpan.FromMinutes(5);
         var result = new List<Recording>(recordings);
         foreach (var folderPath in RecordingFiles.Folders(_recordingsManager))
         {
@@ -222,8 +228,31 @@ public sealed class RecordingsList
             foreach (var item in folder.GetRecursiveChildren(i => i is Video { IsVirtualItem: false } v && v.OwnerId.Equals(Guid.Empty)).OfType<Video>())
             {
                 if (known.Contains(item.Id) || string.IsNullOrEmpty(item.Path)
-                    || LiveBuffers.IsUnkeptBuffer(item)
-                    || _recordingsManager.GetActiveRecordingInfo(item.Path) is not null)
+                    || LiveBuffers.IsUnkeptBuffer(item))
+                {
+                    continue;
+                }
+
+                // Being recorded now: listed first, as a recording and not as a partial one.
+                if (_recordingsManager.GetActiveRecordingInfo(item.Path) is not null)
+                {
+                    if (inProgress)
+                    {
+                        known.Add(item.Id);
+                        var recordingIdentity = EpisodeIdentity.FromLibraryItem(item, new GuideMarker(cfg ?? new PluginConfiguration()), null)
+                            ?? new EpisodeIdentity(null, item.Name, null, null, null, null, false, null);
+                        result.Add(new Recording(
+                            new HistoryStore.RecordedRow(-1, item.Id, recordingIdentity, "recording", now, Path.GetFileName(item.Path)),
+                            item,
+                            false,
+                            false,
+                            true));
+                    }
+
+                    continue;
+                }
+
+                if (!partials)
                 {
                     continue;
                 }
@@ -283,7 +312,8 @@ public sealed class RecordingsList
                     r.Archived,
                     RecordedAt(r),
                     r.Partial,
-                    r.Partial ? Minutes(r.Item) : null);
+                    r.Partial ? Minutes(r.Item) : null,
+                    r.InProgress);
             })
             .OrderByDescending(c => c.RecordedUtc)
             .ThenByDescending(c => c.Season ?? 0)
@@ -389,6 +419,7 @@ public sealed class RecordingsList
         int archived = group.Count(r => r.Archived);
         int partial = group.Count(r => r.Partial);
         int? partialMinutes = group.Count == 1 && newest.Partial ? Minutes(newest.Item) : null;
+        int recording = group.Count(r => r.InProgress);
 
         if (newest.Item is Episode episode)
         {
@@ -399,15 +430,15 @@ public sealed class RecordingsList
             var showName = episode.SeriesName ?? episode.Name;
             if (group.Count > 1)
             {
-                return new Card("Series", seriesId, imageId, showName, $"{group.Count} recordings", group.Count, unplayed, archived, newest.Row.EventUtc, partial);
+                return new Card("Series", seriesId, imageId, showName, $"{group.Count} recordings", group.Count, unplayed, archived, newest.Row.EventUtc, partial, null, recording);
             }
 
-            return new Card("Episode", episode.Id, imageId, showName, EpisodeLine(episode), 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes);
+            return new Card("Episode", episode.Id, imageId, showName, EpisodeLine(episode), 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes, recording);
         }
 
         var item = newest.Item;
         var subtitle = item is Movie ? item.ProductionYear?.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
-        return new Card(item is Movie ? "Movie" : "Video", item.Id, item.Id, item.Name, subtitle, 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes);
+        return new Card(item is Movie ? "Movie" : "Video", item.Id, item.Id, item.Name, subtitle, 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes, recording);
     }
 
     private static string? EpisodeLine(Episode episode)

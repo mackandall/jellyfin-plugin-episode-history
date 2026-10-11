@@ -123,6 +123,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public bool ShowPartialRecordings { get; set; } = true;
 
+    /// <summary>
+    /// Also list recordings that are still being made, marked "Recording". They join the history
+    /// when they finish, as before.
+    /// </summary>
+    public bool ShowInProgressRecordings { get; set; } = true;
+
     public string WatchedSymbol
     {
         get => _watchedSymbol;
