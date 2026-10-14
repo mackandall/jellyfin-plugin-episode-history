@@ -138,6 +138,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool ShowPartialRecordings { get; set; } = true;
 
     /// <summary>
+    /// How long after its last write a file in the recordings folders may be listed as partial
+    /// when the plugin didn't see it being recorded (copied in, or cut off by a server restart).
+    /// A recording the DVR made is listed as soon as it is decided not to count. 0: at once.
+    /// </summary>
+    public int PartialRecordingSettleMinutes { get; set; } = 5;
+
+    /// <summary>
     /// Also list recordings that are still being made, marked "Recording". They join the history
     /// when they finish, as before.
     /// </summary>

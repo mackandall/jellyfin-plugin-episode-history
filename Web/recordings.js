@@ -699,6 +699,16 @@
     }));
 
     var client = window.ApiClient;
+    stopRecordingEntries(id, function (label, onClick) {
+      if (box.isConnected) {
+        var stop = menuItem('stop_circle', label, function () { closeMenu(); onClick(); });
+        // Right under the title: it is the entry a recording in progress is opened for.
+        box.insertBefore(stop, title.nextSibling);
+      }
+    }, function () {
+      var chip = card.querySelector('.episodeHistoryRecordingChip');
+      chip && chip.parentNode.removeChild(chip);
+    });
     if (!single) {
       showDeleteEntry(id, name, function (label, onClick) {
         if (box.isConnected) {
@@ -865,6 +875,89 @@
     cancel.focus();
   }
 
+  /*
+   * "Stop recording": for an item being recorded right now (or a show with an episode being
+   * recorded), in our own card menu and in jellyfin-web's "..." sheet. Offered when the caller
+   * may manage Live TV. A window asks first; what was recorded so far is kept.
+   */
+  // Calls add(label, onClick) once per recording in progress behind the item.
+  function stopRecordingEntries(id, add, onStopped) {
+    var client = window.ApiClient;
+    client.ajax({ type: 'GET', url: client.getUrl('EpisodeHistory/Item/' + id + '/ActiveRecordings'), dataType: 'json' }).then(function (r) {
+      if (!r || !r.CanStop) {
+        return;
+      }
+      (r.Recordings || []).forEach(function (rec) {
+        add(r.Recordings.length > 1 ? 'Stop recording: ' + rec.Name : 'Stop recording', function () {
+          setTimeout(function () { confirmStop(rec, onStopped); }, 150);
+        });
+      });
+    }).catch(function () {});
+  }
+
+  function confirmStop(rec, onStopped) {
+    var overlay = el('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;';
+    var box = el('div');
+    box.style.cssText = 'background:#202020;color:#fff;border-radius:10px;max-width:480px;width:100%;padding:1.2em 1.4em;box-shadow:0 8px 40px rgba(0,0,0,.6);';
+    overlay.appendChild(box);
+    function close() {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.parentNode && overlay.parentNode.removeChild(overlay);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape' || e.key === 'Backspace' || e.keyCode === 10009 || e.keyCode === 461) {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      }
+    }
+    var h = el('h2', null, 'Stop recording?');
+    h.style.cssText = 'margin:0 0 .5em;font-size:1.3em;font-weight:500;';
+    box.appendChild(h);
+    var p = el('div', null, rec.Name + ' is being recorded now. Stopping ends the recording here; what was recorded so far is kept.');
+    p.style.cssText = 'margin-bottom:1.1em;line-height:1.4;';
+    box.appendChild(p);
+    var row = el('div');
+    row.style.cssText = 'display:flex;gap:.8em;justify-content:flex-end;';
+    var cancel = el('button', null, 'Keep recording');
+    cancel.type = 'button';
+    cancel.style.cssText = 'padding:.55em 1.2em;border-radius:6px;border:0;background:rgba(255,255,255,.12);color:inherit;font:inherit;cursor:pointer;';
+    cancel.addEventListener('click', close);
+    var go = el('button', null, 'Stop recording');
+    go.type = 'button';
+    go.style.cssText = 'padding:.55em 1.2em;border-radius:6px;border:0;background:#c62828;color:#fff;font:inherit;cursor:pointer;';
+    go.addEventListener('click', function () {
+      go.disabled = cancel.disabled = true;
+      go.textContent = 'Stopping\u2026';
+      var client = window.ApiClient;
+      client.ajax({ type: 'POST', url: client.getUrl('EpisodeHistory/Item/' + rec.Id + '/StopRecording'), dataType: 'json' }).then(function () {
+        close();
+        cache = {};
+        showCache = {};
+        log('stopped recording ' + rec.Id);
+        if (onStopped) {
+          onStopped();
+        }
+        scheduleCheck();
+      }, function () {
+        close();
+        notify('The recording couldn\'t be stopped (it may have just ended).');
+      });
+    });
+    row.appendChild(cancel);
+    row.appendChild(go);
+    box.appendChild(row);
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) {
+        close();
+      }
+    });
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', onKey, true);
+    cancel.focus();
+  }
+
   // jellyfin-web's own "..." sheet: the show whose card's menu button (or right-click) opened
   // it, else the show page's "..." button. The same detection as JellyDVR Space's archive.js.
   var sheetItemId = null;
@@ -904,25 +997,40 @@
     if (!id || !client) {
       return;
     }
+    function sheetEntry(dataId, icon, label, onClick) {
+      var b = document.createElement('button');
+      b.setAttribute('is', 'emby-button');
+      b.type = 'button';
+      b.className = 'listItem listItem-button actionSheetMenuItem emby-button';
+      b.setAttribute('data-id', dataId);
+      b.innerHTML = '<span class="actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons ' + icon + '" aria-hidden="true"></span>'
+        + '<div class="listItemBody actionsheetListItemBody"><div class="listItemBodyText actionSheetItemText"></div></div>';
+      b.querySelector('.actionSheetItemText').textContent = label;
+      // No stopPropagation: the click bubbling up is what closes the sheet.
+      b.addEventListener('click', onClick);
+      return b;
+    }
     client.getItem(client.getCurrentUserId(), id).then(function (item) {
-      if (!item || item.Type !== 'Series') {
+      if (!item) {
+        return;
+      }
+      if (item.Type === 'Series' || item.Type === 'Episode' || item.Type === 'Movie' || item.Type === 'Video') {
+        var stopCount = 0;
+        stopRecordingEntries(id, function (label, onClick) {
+          if (scroller.isConnected) {
+            var entry = sheetEntry('episodehistory-stoprecording-' + (stopCount++), 'stop_circle', label, onClick);
+            scroller.insertBefore(entry, scroller.firstChild);
+          }
+        });
+      }
+      if (item.Type !== 'Series') {
         return;
       }
       showDeleteEntry(id, item.Name, function (label, onClick) {
         if (!scroller.isConnected || scroller.querySelector('[data-id="episodehistory-deleteall"]')) {
           return;
         }
-        var b = document.createElement('button');
-        b.setAttribute('is', 'emby-button');
-        b.type = 'button';
-        b.className = 'listItem listItem-button actionSheetMenuItem emby-button';
-        b.setAttribute('data-id', 'episodehistory-deleteall');
-        b.innerHTML = '<span class="actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons delete_sweep" aria-hidden="true"></span>'
-          + '<div class="listItemBody actionsheetListItemBody"><div class="listItemBodyText actionSheetItemText"></div></div>';
-        b.querySelector('.actionSheetItemText').textContent = label;
-        // No stopPropagation: the click bubbling up is what closes the sheet.
-        b.addEventListener('click', onClick);
-        scroller.appendChild(b);
+        scroller.appendChild(sheetEntry('episodehistory-deleteall', 'delete_sweep', label, onClick));
       });
     }).catch(function () {});
   }

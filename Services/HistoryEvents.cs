@@ -103,8 +103,34 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         public DateTime? EndedUtc { get; set; }
     }
 
+    /// <summary>The running instance, for the recordings list (which can't take it as a dependency).</summary>
+    public static HistoryEvents? Current { get; private set; }
+
+    /// <summary>Paths a stop was just asked for, until the DVR lets go of the file.</summary>
+    private static readonly ConcurrentDictionary<string, DateTime> Stopping = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Notes that a recording was asked to stop: from now on it no longer counts as being
+    /// recorded, without waiting the moment Jellyfin takes to close the file.
+    /// </summary>
+    public static void MarkStopping(string path) => Stopping[path] = DateTime.UtcNow;
+
+    /// <summary>Whether a stop was asked for in the last minute.</summary>
+    public static bool IsStopping(string? path) =>
+        !string.IsNullOrEmpty(path) && Stopping.TryGetValue(path, out var at) && DateTime.UtcNow - at < TimeSpan.FromMinutes(1);
+
+    /// <summary>A recording that ended and is waiting for its counted / not counted decision.</summary>
+    public bool IsPending(string path) => _pending.ContainsKey(path);
+
+    /// <summary>A recording whose decision was made (in the history if it counted, partial if not).</summary>
+    public bool IsDecided(string path) => _dvrHandled.ContainsKey(path);
+
+    /// <summary>Makes the pending decisions now instead of at the next poll.</summary>
+    public void PollSoon() => _poll?.Change(TimeSpan.FromSeconds(2), PollInterval);
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        Current = this;
         _libraryManager.ItemAdded += OnItemAdded;
         _libraryManager.ItemRemoved += OnItemRemoved;
         _userDataManager.UserDataSaved += OnUserDataSaved;

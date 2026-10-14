@@ -10,6 +10,8 @@ using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaSegments;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Model.LiveTv;
 using MediaBrowser.Controller.LiveTv;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -34,6 +36,9 @@ public sealed class HistoryController : ControllerBase
     private readonly IUserDataManager _userDataManager;
     private readonly IMediaSegmentManager _segments;
     private readonly RecordingsList _recordings;
+    private readonly ILiveTvManager _liveTvManager;
+    private readonly IRecordingsManager _recordingsManager;
+    private readonly IAuthorizationService _authorization;
     private readonly ILogger<HistoryController> _logger;
 
     public HistoryController(
@@ -46,9 +51,15 @@ public sealed class HistoryController : ControllerBase
         IUserDataManager userDataManager,
         IMediaSegmentManager segments,
         RecordingsList recordings,
+        ILiveTvManager liveTvManager,
+        IRecordingsManager recordingsManager,
+        IAuthorizationService authorization,
         ILogger<HistoryController> logger)
     {
         _logger = logger;
+        _liveTvManager = liveTvManager;
+        _recordingsManager = recordingsManager;
+        _authorization = authorization;
         _recordings = recordings;
         _userManager = userManager;
         _userDataManager = userDataManager;
@@ -600,6 +611,69 @@ public sealed class HistoryController : ControllerBase
 
         var cards = _recordings.ShowCards(user, seriesId);
         return cards is null ? NotFound() : Ok(new { Enabled = true, Recordings = cards });
+    }
+
+    /// <summary>
+    /// The recordings being made right now behind an item: the item itself (or one of its
+    /// versions) for an episode or a movie, any of its episodes for a show. Each can be stopped
+    /// with <see cref="StopRecording"/>; <c>CanStop</c> says whether the caller may (Live TV
+    /// management, as for cancelling a timer).
+    /// </summary>
+    [HttpGet("Item/{itemId}/ActiveRecordings")]
+    [Authorize]
+    public async Task<IActionResult> ActiveRecordings([FromRoute] Guid itemId)
+    {
+        IEnumerable<Video> files = _libraryManager.GetItemById(itemId) switch
+        {
+            Series series => _recordings.ShowFiles(series.Id) ?? new List<Video>(),
+            Video video => Versions(video),
+            _ => Array.Empty<Video>()
+        };
+
+        var active = files
+            .Where(_recordings.IsRecordingNow)
+            .DistinctBy(v => v.Id)
+            .Select(v => new { v.Id, Name = v is Episode e && !string.IsNullOrEmpty(e.SeriesName) ? e.SeriesName + " \u2013 " + e.Name : v.Name })
+            .ToList();
+        var canStop = active.Count > 0
+            && (await _authorization.AuthorizeAsync(User, Policies.LiveTvManagement).ConfigureAwait(false)).Succeeded;
+        return Ok(new { CanStop = canStop, Recordings = active });
+    }
+
+    /// <summary>
+    /// Stops the recording that is writing this item's file, by cancelling its timer — what
+    /// "Stop this recording" in the schedule does, reached from the recording instead. What was
+    /// recorded so far is kept. 409 when the item isn't being recorded (any more).
+    /// </summary>
+    [HttpPost("Item/{itemId}/StopRecording")]
+    [Authorize(Policy = Policies.LiveTvManagement)]
+    public async Task<IActionResult> StopRecording([FromRoute] Guid itemId, CancellationToken cancellationToken)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item || string.IsNullOrEmpty(item.Path))
+        {
+            return NotFound();
+        }
+
+        if (_recordingsManager.GetActiveRecordingInfo(item.Path)?.Timer is not { } timer)
+        {
+            return Conflict(new { Message = "It isn't being recorded." });
+        }
+
+        // CancelTimer wants the timer's API id; the recording knows it by the DVR's own id.
+        var timers = (await _liveTvManager.GetTimers(new TimerQuery(), cancellationToken).ConfigureAwait(false)).Items;
+        var dto = timers.FirstOrDefault(t => string.Equals(t.ExternalId, timer.Id, StringComparison.Ordinal));
+        if (dto is null)
+        {
+            return Conflict(new { Message = "The recording's timer wasn't found." });
+        }
+
+        await _liveTvManager.CancelTimer(dto.Id).ConfigureAwait(false);
+        // From here on it isn't "being recorded" for the lists, and its decision is made right
+        // away, so it goes from Recording to Partial (or recorded) without dropping out.
+        HistoryEvents.MarkStopping(item.Path);
+        HistoryEvents.Current?.PollSoon();
+        _logger.LogInformation("Stopped the recording of {Name} ({Path}) on request", item.Name, item.Path);
+        return Ok(new { Stopped = true, item.Name });
     }
 
     private static string? NormalizeFilter(string? filter) => filter?.Trim().ToLowerInvariant() switch

@@ -201,12 +201,12 @@ public sealed class RecordingsList
         && RecordingFiles.IsUnder(item.Path, RecordingFiles.Folders(_recordingsManager))
         && !historyItemIds.Contains(item.Id)
         && !LiveBuffers.IsUnkeptBuffer(item)
-        && _recordingsManager.GetActiveRecordingInfo(item.Path) is null;
+        && !BeingRecorded(item.Path);
 
     /// <summary>
     /// Adds the files in the recordings folders that aren't in the history: recordings still being
     /// made (marked in progress) and partial recordings, each unless turned off. Skips files
-    /// written in the last few minutes that aren't being recorded (a finished recording is added
+    /// written within the settle time (a setting, 5 minutes unless changed) that aren't being recorded (a finished recording is added
     /// to the history shortly after it lands), and unkept live TV buffers.
     /// </summary>
     private List<Recording> WithPartials(List<Recording> recordings)
@@ -221,7 +221,7 @@ public sealed class RecordingsList
 
         var known = recordings.Select(r => r.Item.Id).ToHashSet();
         var now = DateTime.UtcNow;
-        var settled = now - TimeSpan.FromMinutes(5);
+        var settled = now - TimeSpan.FromMinutes(Math.Clamp(cfg?.PartialRecordingSettleMinutes ?? 5, 0, 60));
         var result = new List<Recording>(recordings);
         foreach (var folderPath in RecordingFiles.Folders(_recordingsManager))
         {
@@ -239,7 +239,7 @@ public sealed class RecordingsList
                 }
 
                 // Being recorded now: listed first, as a recording and not as a partial one.
-                if (_recordingsManager.GetActiveRecordingInfo(item.Path) is not null)
+                if (BeingRecorded(item.Path))
                 {
                     if (inProgress)
                     {
@@ -254,6 +254,22 @@ public sealed class RecordingsList
                             true));
                     }
 
+                    continue;
+                }
+
+                // Just ended and not decided yet (counted or not): it stays in the list as a
+                // plain recording, so a recording never drops out between stopping and its
+                // decision. One that counts is then in the history; one that doesn't is partial.
+                var events = HistoryEvents.Current;
+                if (inProgress && (events?.IsPending(item.Path) == true || (HistoryEvents.IsStopping(item.Path) && events?.IsDecided(item.Path) != true)))
+                {
+                    known.Add(item.Id);
+                    var endedIdentity = EpisodeIdentity.FromLibraryItem(item, new GuideMarker(cfg ?? new PluginConfiguration()), null)
+                        ?? new EpisodeIdentity(null, item.Name, null, null, null, null, false, null);
+                    result.Add(new Recording(
+                        new HistoryStore.RecordedRow(-1, item.Id, endedIdentity, "recording", now, Path.GetFileName(item.Path)),
+                        item,
+                        false));
                     continue;
                 }
 
@@ -272,7 +288,9 @@ public sealed class RecordingsList
                     continue;
                 }
 
-                if (written.Year < 2000 || written > settled)
+                // The settle time is for files nothing is known about; a recording the DVR
+                // made and already decided not to count is partial right away.
+                if (written.Year < 2000 || (written > settled && events?.IsDecided(item.Path) != true))
                 {
                     continue;
                 }
@@ -381,8 +399,11 @@ public sealed class RecordingsList
     public List<string> RecordingFolders() => RecordingFiles.Folders(_recordingsManager);
 
     /// <summary>Whether the file is being recorded right now.</summary>
-    public bool IsRecordingNow(Video item) =>
-        !string.IsNullOrEmpty(item.Path) && _recordingsManager.GetActiveRecordingInfo(item.Path) is not null;
+    public bool IsRecordingNow(Video item) => BeingRecorded(item.Path);
+
+    /// <summary>Being written by the DVR, and not just asked to stop.</summary>
+    private bool BeingRecorded(string? path) =>
+        !string.IsNullOrEmpty(path) && _recordingsManager.GetActiveRecordingInfo(path) is not null && !HistoryEvents.IsStopping(path);
 
     private IEnumerable<Recording> OfShow(Series series)
     {
