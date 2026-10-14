@@ -73,6 +73,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
     // Files that appeared in a recordings folder, waiting out AddedDelay. Keyed by path.
     private readonly ConcurrentDictionary<string, (Guid ItemId, DateTime DueUtc)> _added = new(StringComparer.Ordinal);
+    private static readonly TimeSpan TidyDelay = TimeSpan.FromSeconds(3);
     private Timer? _poll;
     private int _polling;
 
@@ -450,10 +451,40 @@ public sealed class HistoryEvents : IHostedService, IDisposable
             {
                 _sweeper.Request("recording deleted");
             }
+
+            if (Config.TidyDeletedRecordings && e.Item is Video { Path: { Length: > 0 } path }
+                && RecordingFiles.Folders(_recordingsManager) is var roots && RecordingFiles.IsUnder(path, roots))
+            {
+                _ = TidyAsync(path, roots, (e.Item as Episode)?.Series);
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to handle removal of {Name}", e.Item?.Name);
+        }
+    }
+
+    /// <summary>
+    /// A deleted recording's leftovers (the files beside it, its emptied season and show folders)
+    /// go too, whoever deleted it. A moment later, so the delete itself has finished; a show whose
+    /// folder went leaves the library with it.
+    /// </summary>
+    private async Task TidyAsync(string path, System.Collections.Generic.List<string> roots, Series? show)
+    {
+        try
+        {
+            await Task.Delay(TidyDelay).ConfigureAwait(false);
+            if (RecordingTidy.AfterDelete(path, roots, _logger)
+                && show is not null
+                && string.Equals(Path.TrimEndingDirectorySeparator(show.Path ?? string.Empty), RecordingTidy.ShowFolder(path), StringComparison.Ordinal)
+                && _libraryManager.GetItemById(show.Id) is Series current)
+            {
+                _libraryManager.DeleteItem(current, new DeleteOptions { DeleteFileLocation = false }, true);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to tidy up after {Path}", path);
         }
     }
 

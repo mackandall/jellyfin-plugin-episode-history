@@ -56,6 +56,12 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool CountAllLibraries { get; set; }
 
     /// <summary>
+    /// When a recording is deleted (from any app), also delete the files beside it (.nfo,
+    /// thumbnail, .edl) and its season and show folders once no recording is left in them.
+    /// </summary>
+    public bool TidyDeletedRecordings { get; set; } = true;
+
+    /// <summary>
     /// A file in the recordings folders that the plugin didn't see being recorded (library
     /// import, or copied in by hand) only counts as recorded if it is at least this long, so
     /// a stub from a recording stopped early doesn't block the next airing.

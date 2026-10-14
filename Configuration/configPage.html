@@ -86,6 +86,17 @@
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
+                            <input id="TidyDeletedRecordings" type="checkbox" is="emby-checkbox" />
+                            <span>Remove a deleted recording's leftover files and empty folders</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            When a recording is deleted from any app, its .nfo, thumbnail and .edl go too, and its
+                            season and show folders once no recording is left in them.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
                             <input id="CountAllLibraries" type="checkbox" is="emby-checkbox" />
                             <span>Count episodes and movies from all libraries as in library</span>
                         </label>
@@ -385,6 +396,7 @@
                         page.querySelector("#SkipWatchedEpisodes").checked = config.SkipWatchedEpisodes !== false;
                         page.querySelector("#MinRecordedPercent").value = config.MinRecordedPercent;
                         page.querySelector("#CountAllLibraries").checked = config.CountAllLibraries;
+                        page.querySelector("#TidyDeletedRecordings").checked = config.TidyDeletedRecordings !== false;
                         page.querySelector("#MinRecordingMinutes").value = config.MinRecordingMinutes;
                         page.querySelector("#WatchedSymbol").value = config.WatchedSymbol || "";
                         page.querySelector("#InLibrarySymbol").value = config.InLibrarySymbol || "";
@@ -508,6 +520,7 @@
                         config.SkipWatchedEpisodes = page.querySelector("#SkipWatchedEpisodes").checked;
                         config.MinRecordedPercent = parseInt(page.querySelector("#MinRecordedPercent").value, 10) || 0;
                         config.CountAllLibraries = page.querySelector("#CountAllLibraries").checked;
+                        config.TidyDeletedRecordings = page.querySelector("#TidyDeletedRecordings").checked;
                         config.MinRecordingMinutes = parseInt(page.querySelector("#MinRecordingMinutes").value, 10) || 0;
                         config.WatchedSymbol = page.querySelector("#WatchedSymbol").value;
                         config.InLibrarySymbol = page.querySelector("#InLibrarySymbol").value;

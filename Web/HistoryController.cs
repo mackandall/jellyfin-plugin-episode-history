@@ -419,7 +419,7 @@ public sealed class HistoryController : ControllerBase
                     var path = v.Path;
                     _libraryManager.DeleteItem(v, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = true }, true);
                     deleted++;
-                    DeleteSideFiles(path);
+                    RecordingTidy.DeleteSideFiles(path, _logger);
                 }
                 catch (Exception ex)
                 {
@@ -431,7 +431,7 @@ public sealed class HistoryController : ControllerBase
             // The shows these were in, before their folders go: an emptied one leaves the library
             // with its folder (Jellyfin only notices by itself where it can watch the folder).
             var shows = targets.OfType<MediaBrowser.Controller.Entities.TV.Episode>().Select(e => e.Series).OfType<MediaBrowser.Controller.Entities.TV.Series>().DistinctBy(x => x.Id).ToList();
-            foreach (var dir in targets.Select(v => ShowFolder(v.Path)).OfType<string>().Distinct())
+            foreach (var dir in targets.Select(v => RecordingTidy.ShowFolder(v.Path)).OfType<string>().Distinct())
             {
                 if (RemoveIfNoVideos(dir, archive))
                 {
@@ -464,87 +464,16 @@ public sealed class HistoryController : ControllerBase
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
-    private static readonly string[] SideExtensions = { ".nfo", ".edl", ".txt", ".log", ".xml", ".jpg", ".png", ".srt" };
-
-    /// <summary>What Jellyfin and Comskip leave next to a recording: its .nfo, -thumb.jpg, .edl and so on.</summary>
-    private void DeleteSideFiles(string? videoPath)
-    {
-        var dir = System.IO.Path.GetDirectoryName(videoPath);
-        if (dir is null || !System.IO.Directory.Exists(dir))
-        {
-            return;
-        }
-
-        var stem = System.IO.Path.GetFileNameWithoutExtension(videoPath)!;
-        foreach (var f in System.IO.Directory.EnumerateFiles(dir))
-        {
-            var name = System.IO.Path.GetFileName(f);
-            var ext = System.IO.Path.GetExtension(name);
-            var rest = System.IO.Path.GetFileNameWithoutExtension(name);
-            if (SideExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)
-                && (rest == stem || rest == stem + "-thumb"))
-            {
-                try
-                {
-                    System.IO.File.Delete(f);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Couldn't delete {File}", f);
-                }
-            }
-        }
-    }
-
-    /// <summary>The show's folder in the recordings folders: the recording's folder, or its parent for a "Season N" folder.</summary>
-    private static string? ShowFolder(string? videoPath)
-    {
-        var dir = System.IO.Path.GetDirectoryName(videoPath);
-        if (dir is not null && System.IO.Path.GetFileName(dir).StartsWith("Season", StringComparison.OrdinalIgnoreCase))
-        {
-            dir = System.IO.Path.GetDirectoryName(dir);
-        }
-
-        return dir;
-    }
-
-    /// <summary>
-    /// Removes a show's folder once no video is left anywhere in it (only tvshow.nfo, artwork and
-    /// empty season folders); true when it went. Never a recordings folder itself, nor, for an
-    /// <paramref name="archive"/> show, a library's own folder.
-    /// </summary>
+    /// <summary>Removes an emptied show folder: under the recordings folders, or, for an <paramref name="archive"/> show, under a library's folders.</summary>
     private bool RemoveIfNoVideos(string dir, bool archive)
     {
-        try
-        {
-            var roots = archive
-                ? _libraryManager.GetVirtualFolders()
-                    .SelectMany(f => f.Locations ?? Array.Empty<string>())
-                    .Select(p => System.IO.Path.TrimEndingDirectorySeparator(p) + System.IO.Path.DirectorySeparatorChar)
-                    .ToList()
-                : _recordings.RecordingFolders();
-            var trimmed = System.IO.Path.TrimEndingDirectorySeparator(dir) + System.IO.Path.DirectorySeparatorChar;
-            if (!System.IO.Directory.Exists(dir) || roots.Contains(trimmed) || !roots.Any(r => trimmed.StartsWith(r, StringComparison.Ordinal)))
-            {
-                return false;
-            }
-
-            var left = System.IO.Directory.EnumerateFiles(dir, "*", System.IO.SearchOption.AllDirectories)
-                .Where(f => !SideExtensions.Contains(System.IO.Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
-                .ToList();
-            if (left.Count == 0)
-            {
-                System.IO.Directory.Delete(dir, true);
-                _logger.LogInformation("Removed the emptied show folder {Folder}", dir);
-                return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Couldn't remove the show folder {Folder}", dir);
-        }
-
-        return false;
+        var roots = archive
+            ? _libraryManager.GetVirtualFolders()
+                .SelectMany(f => f.Locations ?? Array.Empty<string>())
+                .Select(p => System.IO.Path.TrimEndingDirectorySeparator(p) + System.IO.Path.DirectorySeparatorChar)
+                .ToList()
+            : _recordings.RecordingFolders();
+        return RecordingTidy.RemoveIfNoVideos(dir, roots, _logger);
     }
 
     /// <summary>An episode's versions: its primary and the primary's alternates (this one included).</summary>
