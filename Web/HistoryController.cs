@@ -44,6 +44,7 @@ public sealed class HistoryController : ControllerBase
     private readonly RecordingRepair _repair;
     private readonly ScheduleLedger _ledger;
     private readonly Programmes _programmes;
+    private readonly RecordingChannels _channels;
     private readonly ILogger<HistoryController> _logger;
 
     public HistoryController(
@@ -63,8 +64,10 @@ public sealed class HistoryController : ControllerBase
         RecordingRepair repair,
         ScheduleLedger ledger,
         Programmes programmes,
+        RecordingChannels channels,
         ILogger<HistoryController> logger)
     {
+        _channels = channels;
         _ledger = ledger;
         _programmes = programmes;
         _stalls = stalls;
@@ -905,7 +908,13 @@ public sealed class HistoryController : ControllerBase
         var active = files
             .Where(_recordings.IsRecordingNow)
             .DistinctBy(v => v.Id)
-            .Select(v => new { v.Id, Name = v is Episode e && !string.IsNullOrEmpty(e.SeriesName) ? e.SeriesName + " \u2013 " + e.Name : v.Name })
+            .Select(v => new
+            {
+                v.Id,
+                Name = v is Episode e && !string.IsNullOrEmpty(e.SeriesName) ? e.SeriesName + " \u2013 " + e.Name : v.Name,
+                // The Live TV channel it is recorded from, for "Watch live".
+                ChannelId = _channels.ByExternalId(_recordingsManager.GetActiveRecordingInfo(v.Path)?.Timer?.ChannelId)?.Id
+            })
             .ToList();
         var canStop = active.Count > 0
             && (await _authorization.AuthorizeAsync(User, Policies.LiveTvManagement).ConfigureAwait(false)).Succeeded;
