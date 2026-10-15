@@ -59,6 +59,15 @@ public sealed class StallNotes
         }
     }
 
+    /// <summary>Notes taken since <paramref name="since"/>, by file name (without extension).</summary>
+    public List<KeyValuePair<string, Note>> Recent(DateTime since)
+    {
+        lock (_lock)
+        {
+            return Load().Where(kv => kv.Value.NotedUtc >= since).ToList();
+        }
+    }
+
     public void Set(string path, Note note)
     {
         lock (_lock)

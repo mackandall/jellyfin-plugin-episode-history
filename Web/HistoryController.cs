@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -578,6 +579,85 @@ public sealed class HistoryController : ControllerBase
                 CanKeep = p is not null && p.Key == e.Key && p.State is Programmes.Waiting or Programmes.Scheduled
             };
         }));
+    }
+
+    /// <summary>
+    /// For a client's Home screen: what needs attention (recordings that didn't record, ones that
+    /// came out incomplete and are waiting to be recorded again, stalled ones), newest first, and the
+    /// recordings drive's space. Open to any signed-in user; nothing here changes anything.
+    /// </summary>
+    [HttpGet("Home")]
+    [Authorize]
+    public IActionResult Home()
+    {
+        var now = DateTime.UtcNow;
+        var programmes = _programmes.All();
+        static string When(DateTime utc) => utc.ToLocalTime().ToString("ddd h:mm tt", CultureInfo.InvariantCulture);
+        static string Next(Programmes.Programme? p) => p?.State switch
+        {
+            Programmes.Waiting => "waiting for another airing",
+            Programmes.Scheduled when p.NextStartUtc is { } s => "records again " + When(s),
+            Programmes.GaveUp => "no other airing was recorded",
+            _ => "not recorded again"
+        };
+        Guid? ItemOf(Programmes.Programme p) =>
+            p.Files().FirstOrDefault() is { } f && RecordingFiles.ItemAt(_libraryManager, f) is { } item ? item.Id : null;
+
+        var items = new List<(DateTime At, object Item)>();
+        var listed = new HashSet<string>(StringComparer.Ordinal);
+
+        // Recordings that produced nothing, until another airing is in or someone keeps it as it is.
+        foreach (var e in _ledger.Failures().Where(e => now - e.StartUtc < TimeSpan.FromDays(7)))
+        {
+            var p = programmes.FirstOrDefault(q => q.Key == e.Key)
+                ?? programmes.Where(q => q.Identity is { } x && e.Identity is { } y && x.SameEpisode(y)).OrderByDescending(q => q.CreatedUtc).FirstOrDefault();
+            if (p?.State is Programmes.Replaced or Programmes.Complete or Programmes.Kept)
+            {
+                continue;
+            }
+
+            items.Add((e.StartUtc, new { Kind = "failed", e.Title, Detail = "Didn't record · " + Next(p), ItemId = (Guid?)null }));
+        }
+
+        // Incomplete ones on the list to be recorded again.
+        foreach (var p in programmes.Where(p => p.Pieces.Count > 0 && p.State is Programmes.Waiting or Programmes.Scheduled && now - p.CreatedUtc < TimeSpan.FromDays(30)))
+        {
+            foreach (var f in p.Pieces.Select(x => Path.GetFileNameWithoutExtension(x.Path)).Append(p.JoinedPath is { } j ? Path.GetFileNameWithoutExtension(j) : null).OfType<string>())
+            {
+                listed.Add(f);
+            }
+
+            items.Add((p.ProgramStartUtc, new
+            {
+                Kind = "incomplete",
+                p.Title,
+                Detail = string.Format(CultureInfo.InvariantCulture, "{0:F0} of {1:F0} min · {2}", p.CapturedSeconds / 60, p.ScheduledSeconds / 60, Next(p)),
+                ItemId = ItemOf(p)
+            }));
+        }
+
+        // Stalled lately and not kept as it is (keeping one clears its note).
+        foreach (var (file, note) in _stalls.Recent(now - TimeSpan.FromDays(7)).Where(kv => !listed.Contains(kv.Key)))
+        {
+            var p = _programmes.ForFile(file);
+            items.Add((note.FirstStallUtc, new { Kind = "stalled", Title = p?.Title ?? file, Detail = note.Short, ItemId = p is null ? null : ItemOf(p) }));
+        }
+
+        object? drive = null;
+        try
+        {
+            if (RecordingFiles.Folders(_recordingsManager).FirstOrDefault(Directory.Exists) is { } folder)
+            {
+                var d = new DriveInfo(folder);
+                drive = new { FreeBytes = d.AvailableFreeSpace, TotalBytes = d.TotalSize };
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            _logger.LogDebug(ex, "Couldn't read the recordings drive's space");
+        }
+
+        return Ok(new { Attention = items.OrderByDescending(x => x.At).Take(20).Select(x => x.Item), Drive = drive });
     }
 
     /// <summary>"Don't record it again" for an airing on the failed list.</summary>
