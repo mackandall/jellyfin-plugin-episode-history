@@ -39,6 +39,8 @@ public sealed class HistoryController : ControllerBase
     private readonly ILiveTvManager _liveTvManager;
     private readonly IRecordingsManager _recordingsManager;
     private readonly IAuthorizationService _authorization;
+    private readonly StallNotes _stalls;
+    private readonly RecordingRepair _repair;
     private readonly ILogger<HistoryController> _logger;
 
     public HistoryController(
@@ -54,8 +56,12 @@ public sealed class HistoryController : ControllerBase
         ILiveTvManager liveTvManager,
         IRecordingsManager recordingsManager,
         IAuthorizationService authorization,
+        StallNotes stalls,
+        RecordingRepair repair,
         ILogger<HistoryController> logger)
     {
+        _stalls = stalls;
+        _repair = repair;
         _logger = logger;
         _liveTvManager = liveTvManager;
         _recordingsManager = recordingsManager;
@@ -487,6 +493,194 @@ public sealed class HistoryController : ControllerBase
         return RecordingTidy.RemoveIfNoVideos(dir, roots, _logger);
     }
 
+    /// <summary>
+    /// What the recordings lists warn about for one recording, and what the caller may do about
+    /// it: <c>Partial</c> (doesn't count as recorded), <c>Stalled</c> with the story in
+    /// <c>Text</c> (the tuner went quiet while it was being made), <c>CanKeep</c> (count it as
+    /// recorded / clear the warning) and <c>CanRecordAgain</c> (schedule the next airing).
+    /// </summary>
+    [HttpGet("Item/{itemId}/RecordingState")]
+    [Authorize]
+    public async Task<IActionResult> RecordingState([FromRoute] Guid itemId)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item || string.IsNullOrEmpty(item.Path) || _recordings.IsRecordingNow(item))
+        {
+            return Ok(new { Partial = false, Stalled = false });
+        }
+
+        var warning = _repair.Warning(item.Path);
+        var partial = _recordings.IsPartial(item, _recordings.HistoryItemIds());
+        var pieces = Pieces(item).Count;
+        if (warning.Short is null && !partial && pieces < 2)
+        {
+            return Ok(new { Partial = false, Stalled = false });
+        }
+
+        return Ok(new
+        {
+            Partial = partial,
+            Stalled = warning.Short is not null,
+            warning.Text,
+            Pieces = pieces,
+            CanKeep = (await _authorization.AuthorizeAsync(User, Policies.RequiresElevation).ConfigureAwait(false)).Succeeded,
+            CanRecordAgain = (await _authorization.AuthorizeAsync(User, Policies.LiveTvManagement).ConfigureAwait(false)).Succeeded
+        });
+    }
+
+    /// <summary>
+    /// "Keep it as it is": a partial recording counts as recorded from now on (guide marks,
+    /// series recordings skip it), and a stalled one loses its warning.
+    /// </summary>
+    [HttpPost("Item/{itemId}/KeepRecording")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public async Task<IActionResult> KeepRecording([FromRoute] Guid itemId, CancellationToken cancellationToken)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item || string.IsNullOrEmpty(item.Path))
+        {
+            return NotFound();
+        }
+
+        var counted = false;
+        if (_recordings.IsPartial(item, _recordings.HistoryItemIds()))
+        {
+            var identity = EpisodeIdentity.FromLibraryItem(item, Marker(), null)
+                ?? new EpisodeIdentity(null, item.Name, null, null, null, null, false, null);
+            counted = _store.Upsert(HistoryStore.KindRecorded, null, item.Id, identity, "kept", DateTime.UtcNow);
+        }
+
+        var cleared = _stalls.Remove(item.Path);
+        await _repair.KeepAsync(item.Path, cancellationToken).ConfigureAwait(false);
+        if (counted)
+        {
+            _sweeper.Request("recording kept", TimeSpan.FromSeconds(1));
+        }
+
+        _logger.LogInformation("Kept {Name} as it is (counted as recorded: {Counted}, stall warning cleared: {Cleared})", item.Name, counted, cleared);
+        return Ok(new { Counted = counted, Cleared = cleared });
+    }
+
+    /// <summary>
+    /// "Record again": schedules the next airing of a recording's programme found in the guide
+    /// (the recording itself is kept; delete it when the new one is in). <c>Scheduled</c> false
+    /// with a <c>Message</c> when the guide has no later airing; <c>AlreadyScheduled</c> when
+    /// that airing has a recording set already. <paramref name="dryRun"/> only looks.
+    /// </summary>
+    [HttpPost("Item/{itemId}/RecordAgain")]
+    [Authorize(Policy = Policies.LiveTvManagement)]
+    public async Task<IActionResult> RecordAgain([FromRoute] Guid itemId, [FromQuery] bool dryRun, CancellationToken cancellationToken)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item
+            || EpisodeIdentity.FromLibraryItem(item, Marker(), _store.GetProgramIdForItem(item.Id)) is not { } identity)
+        {
+            return NotFound();
+        }
+
+        var now = DateTime.UtcNow;
+        var marker = Marker();
+        var names = new[] { (item as Episode)?.SeriesName, item.Name, identity.SeriesName, identity.SeriesAlt }
+            .Select(EpisodeIdentity.Normalize).Where(n => n.Length > 0).ToHashSet(StringComparer.Ordinal);
+        var next = _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery
+            {
+                IncludeItemTypes = new[] { Jellyfin.Data.Enums.BaseItemKind.LiveTvProgram },
+                MinStartDate = now
+            })
+            .OfType<LiveTvProgram>()
+            .Where(p => names.Contains(EpisodeIdentity.Normalize(marker.Strip(p.Name) ?? p.Name)))
+            .Where(p => EpisodeIdentity.FromProgram(p, marker).SameEpisode(identity))
+            .OrderBy(p => p.StartDate)
+            .FirstOrDefault();
+        if (next is null)
+        {
+            return Ok(new { Scheduled = false, Message = "The guide has no later airing of it yet." });
+        }
+
+        var channel = _libraryManager.GetItemById(next.ChannelId)?.Name;
+        var programId = next.Id.ToString("N");
+        var timers = (await _liveTvManager.GetTimers(new TimerQuery(), cancellationToken).ConfigureAwait(false)).Items;
+        var already = timers.Any(t => string.Equals(t.ProgramId, programId, StringComparison.OrdinalIgnoreCase)
+            && t.Status is not (RecordingStatus.Cancelled or RecordingStatus.Completed or RecordingStatus.Error));
+        if (!already && !dryRun)
+        {
+            var defaults = await _liveTvManager.GetNewTimerDefaults(programId, cancellationToken).ConfigureAwait(false);
+            await _liveTvManager.CreateTimer(
+                new TimerInfoDto
+                {
+                    ProgramId = programId,
+                    ChannelId = defaults.ChannelId,
+                    ServiceName = defaults.ServiceName,
+                    Name = defaults.Name,
+                    StartDate = defaults.StartDate,
+                    EndDate = defaults.EndDate,
+                    PrePaddingSeconds = defaults.PrePaddingSeconds,
+                    PostPaddingSeconds = defaults.PostPaddingSeconds,
+                    IsPrePaddingRequired = defaults.IsPrePaddingRequired,
+                    IsPostPaddingRequired = defaults.IsPostPaddingRequired,
+                    KeepUntil = defaults.KeepUntil
+                },
+                cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("Recording {Name} again at {Start:u} on {Channel}", item.Name, next.StartDate, channel);
+        }
+
+        if (!dryRun)
+        {
+            _repair.NoteScheduled(item.Path, programId, next.StartDate, channel, !already);
+        }
+
+        return Ok(new { Scheduled = !already && !dryRun, AlreadyScheduled = already, Start = next.StartDate, Channel = channel, item.Name });
+    }
+
+    /// <summary>
+    /// "Join the pieces": the versions of an interrupted recording still in the recordings
+    /// folders ("Name", "Name - 1"…) become one file, in the background (it takes about a minute
+    /// per hour of recording). What the automatic join does when it saw the recording being made;
+    /// this is for pieces from before, or after it was turned off.
+    /// </summary>
+    [HttpPost("Item/{itemId}/JoinPieces")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public IActionResult JoinPieces([FromRoute] Guid itemId)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item)
+        {
+            return NotFound();
+        }
+
+        var pieces = Pieces(item);
+        if (pieces.Count < 2)
+        {
+            return Conflict(new { Message = "This recording is in one piece." });
+        }
+
+        var keep = (Plugin.Instance?.Configuration.JoinKeepPiecesDays ?? 3) > 0;
+        _ = Task.Run(async () =>
+        {
+            var result = await _repair.JoinFilesAsync(pieces, keep, CancellationToken.None).ConfigureAwait(false);
+            if (result.Ok)
+            {
+                _sweeper.Request("pieces joined", TimeSpan.FromSeconds(30));
+            }
+            else
+            {
+                _logger.LogWarning("The pieces of {Name} weren't joined: {Message}", item.Name, result.Message);
+            }
+        });
+        return Accepted(new { Pieces = pieces.Count, Files = pieces.Select(System.IO.Path.GetFileName).ToList() });
+    }
+
+    /// <summary>The files an interrupted recording is in: the item's versions in the recordings folders that aren't being recorded, in playing order.</summary>
+    private List<string> Pieces(Video item)
+    {
+        var folders = _recordings.RecordingFolders();
+        var versions = Versions(item).ToList();
+        if (versions.Any(_recordings.IsRecordingNow))
+        {
+            return new List<string>();
+        }
+
+        return RecordingRepair.OrderPieces(versions
+            .Select(v => v.Path)
+            .Where(p => !string.IsNullOrEmpty(p) && RecordingFiles.IsUnder(p, folders) && System.IO.File.Exists(p) && !LiveBuffers.IsUnkeptBuffer(p)));
+    }
+
     /// <summary>An episode's versions: its primary and the primary's alternates (this one included).</summary>
     private IEnumerable<Video> Versions(Video item)
     {
@@ -582,11 +776,34 @@ public sealed class HistoryController : ControllerBase
             Position = cfg.RecordingsRowPosition,
             DefaultFilter = NormalizeFilter(cfg.RecordingsRowDefaultFilter) ?? RecordingsList.FilterAll,
             TabMode = cfg.RecordingsTabMode,
-            TabLimit = cfg.RecordingsTabLimit
+            TabLimit = cfg.RecordingsTabLimit,
+            TabView = cfg.RecordingsTabView,
+            DateLogo = cfg.RecordingsDateLogo
         };
 
         var cards = _recordings.Cards(user, filter, cfg.RecordingsRowGroupByShow, cfg.RecordingsRowIncludeMovies, limit ?? cfg.RecordingsRowLimit);
         return Ok(new { Settings = settings, Filter = filter, Cards = cards });
+    }
+
+    /// <summary>
+    /// Every recording for the calling user, newest first, one entry each with the channel it
+    /// came from: the list by date (Live TV > Recordings, and JDVR). <paramref name="filter"/> as
+    /// for <see cref="Recordings"/>; <c>DateLogo</c> says where clients put the channel logo.
+    /// </summary>
+    [HttpGet("Recordings/ByDate")]
+    [Authorize]
+    public IActionResult RecordingsByDate([FromQuery] string? filter, [FromQuery] int? limit)
+    {
+        var user = _userManager.GetUserById(CurrentUserId());
+        if (user is null)
+        {
+            return Unauthorized();
+        }
+
+        var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        filter = NormalizeFilter(filter) ?? NormalizeFilter(cfg.RecordingsRowDefaultFilter) ?? RecordingsList.FilterAll;
+        var entries = _recordings.ByDate(user, filter, true, limit ?? 500);
+        return Ok(new { DateLogo = cfg.RecordingsDateLogo, Filter = filter, Recordings = entries });
     }
 
     /// <summary>

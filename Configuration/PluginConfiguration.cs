@@ -56,6 +56,46 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool CountAllLibraries { get; set; }
 
     /// <summary>
+    /// A recording whose file stopped growing for at least this long while it was being made (the
+    /// tuner went quiet) is marked "Stalled" in the recordings lists, with how much is missing.
+    /// The time without data never counts towards "recorded". 0: no warnings.
+    /// </summary>
+    public int StallWarnSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Join the pieces of a recording that was interrupted (a server restart, a tuner tuned again
+    /// after a stall) into one file once the programme is over. Nothing is re-encoded.
+    /// </summary>
+    public bool JoinSplitRecordings { get; set; } = true;
+
+    /// <summary>
+    /// After joining, keep the original pieces (hidden, beside the joined file) for this many
+    /// days before deleting them. 0: delete them as soon as the joined file has been checked.
+    /// </summary>
+    public int JoinKeepPiecesDays { get; set; } = 3;
+
+    /// <summary>
+    /// Record again, at the next airing found in the guide, a recording that came out incomplete
+    /// (failed part-way, stalled, pieces with too much missing). Not one stopped on purpose.
+    /// </summary>
+    public bool AutoRerecord { get; set; } = true;
+
+    /// <summary>A recording holding less than this share of the programme is incomplete.</summary>
+    public int RerecordBelowPercent { get; set; } = 97;
+
+    /// <summary>Where another airing may be: "any" channel, or the "same" channel only.</summary>
+    public string RerecordChannelScope { get; set; } = "any";
+
+    /// <summary>Once a full copy is in: "delete" the incomplete recording, or "keep" every version.</summary>
+    public string RerecordReplace { get; set; } = "delete";
+
+    /// <summary>Most airings recorded to replace one incomplete recording.</summary>
+    public int RerecordMaxAttempts { get; set; } = 2;
+
+    /// <summary>Stop looking for another airing after this many days.</summary>
+    public int RerecordGiveUpDays { get; set; } = 30;
+
+    /// <summary>
     /// When a recording is deleted (from any app), also delete the files beside it (.nfo,
     /// thumbnail, .edl) and its season and show folders once no recording is left in them.
     /// </summary>
@@ -124,6 +164,18 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Most cards in the Live TV > Recordings grid.</summary>
     public int RecordingsTabLimit { get; set; } = 200;
+
+    /// <summary>
+    /// How Live TV > Recordings opens: "cards" (the grid) or "date" (one line per recording,
+    /// newest first, by day, with its channel). Each viewer can switch; the choice is remembered.
+    /// </summary>
+    public string RecordingsTabView { get; set; } = "cards";
+
+    /// <summary>
+    /// Where the channel logo goes in the list by date: "left" (at the start of each line, quickest
+    /// to spot while scrolling) or "right" (at the end, as in Channels DVR).
+    /// </summary>
+    public string RecordingsDateLogo { get; set; } = "left";
 
     /// <summary>
     /// Show a "Recordings" row on a show's page (above Next Up) listing that show's DVR

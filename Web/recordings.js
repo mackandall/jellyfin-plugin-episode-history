@@ -43,7 +43,10 @@
     { id: 'archived', label: 'Archived' }
   ];
 
+  var VIEW_KEY = 'episodeHistory.recordingsView';
   var cache = {};        // filter|limit -> { at, data }
+  var dateCache = {};    // filter -> { at, data }: the list by date
+  var dateInflight = {};
   var inflight = {};     // filter|limit -> pending request
   var settings = null;   // row/tab settings from the last response
   var loading = {};      // view name -> true while its first load runs
@@ -283,7 +286,12 @@
         + '<span class="material-icons fiber_manual_record" aria-hidden="true"></span><span>Recording</span></div>';
     }
     // A file that doesn't count as recorded (cut short, failed stub): marked so it's easy to delete.
-    if (c.partial > 0) {
+    // The tuner went quiet while it was being made: part of the programme is missing. Takes the
+    // partial chip's place (it says more); the menu offers to keep it or record it again.
+    if (c.stallText) {
+      html += '<div class="episodeHistoryPartialChip episodeHistoryStalledChip" title="' + esc(c.stallTitle || 'The tuner went quiet during this recording') + '">'
+        + '<span class="material-icons warning" aria-hidden="true"></span><span>' + esc(c.stallText) + '</span></div>';
+    } else if (c.partial > 0) {
       var single = c.count === 1;
       var text = single ? 'Partial' + (c.partialMinutes ? ' · ' + c.partialMinutes + ' min' : '') : c.partial + ' partial';
       html += '<div class="episodeHistoryPartialChip" title="Partial recording: too short to count as recorded">'
@@ -333,16 +341,32 @@
       filters.appendChild(b);
     });
     header.appendChild(filters);
+    if (view.name === 'tab') {
+      // One switch: the cards are the usual view, so only "By date" needs a button (on/off).
+      var views = el('div', 'episodeHistoryRecordingsFilters episodeHistoryRecordingsViews');
+      var byDate = el('button', 'episodeHistoryRecordingsFilter', 'By date');
+      byDate.type = 'button';
+      byDate.setAttribute('data-eh-show', 'date');
+      byDate.addEventListener('click', function () {
+        saveView(currentView() === 'date' ? 'cards' : 'date');
+        render(section, currentFilter());
+      });
+      views.appendChild(byDate);
+      header.appendChild(views);
+    }
     section.appendChild(header);
 
     var scroller = el('div', 'padded-top-focusscale padded-bottom-focusscale episodeHistoryRecordingsScroller');
     itemsContainerInto(scroller);
     section.appendChild(scroller);
+    if (view.name === 'tab') {
+      section.appendChild(el('div', 'ehDate'));
+    }
     return section;
   }
 
   function fill(section, data, filter) {
-    [].slice.call(section.querySelectorAll('.episodeHistoryRecordingsFilter')).forEach(function (b) {
+    [].slice.call(section.querySelectorAll('[data-filter]')).forEach(function (b) {
       b.classList.toggle('episodeHistoryRecordingsFilter-active', b.getAttribute('data-filter') === filter);
     });
     var items = section.querySelector('.episodeHistoryRecordingsItems');
@@ -358,7 +382,8 @@
       return cardHtml({
         id: c.Id, type: c.Type, name: c.Name, subtitle: c.Subtitle, image: imageUrl(c.ImageId),
         count: c.Count, unplayed: c.UnplayedCount, played: c.UnplayedCount === 0, archived: c.ArchivedCount,
-        partial: c.PartialCount || 0, partialMinutes: c.PartialMinutes, recording: c.RecordingCount || 0
+        partial: c.PartialCount || 0, partialMinutes: c.PartialMinutes, recording: c.RecordingCount || 0,
+        stallText: c.StallText, stallTitle: c.StallTitle
       });
     }).join('');
   }
@@ -368,6 +393,19 @@
   }
 
   function render(section, filter) {
+    var dateList = section.querySelector('.ehDate');
+    var byDate = !!dateList && currentView() === 'date';
+    [].slice.call(section.querySelectorAll('[data-eh-show]')).forEach(function (b) {
+      b.classList.toggle('episodeHistoryRecordingsFilter-active', byDate);
+    });
+    section.querySelector('.episodeHistoryRecordingsScroller').style.display = byDate ? 'none' : '';
+    if (dateList) {
+      dateList.style.display = byDate ? '' : 'none';
+    }
+    if (byDate) {
+      renderDate(section, filter);
+      return;
+    }
     var limit = sectionLimit(section);
     var cached = cache[key(filter, limit)];
     if (cached) {
@@ -381,6 +419,275 @@
       }).catch(function () { log('loading recordings failed'); });
     }
   }
+
+  /*
+   * Live TV > Recordings as a list by date (SageTV's and Channels DVR's recent recordings): one
+   * line per recording, newest first, grouped by day, each with the logo and number of the
+   * channel it came from, and the selected one's details beside the list. Data from
+   * GET /EpisodeHistory/Recordings/ByDate; where the logo goes (start or end of the line) is a
+   * plugin setting. The details' "..." is the same menu as the cards'.
+   */
+  function storedView() {
+    try {
+      return window.localStorage.getItem(VIEW_KEY);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveView(v) {
+    try {
+      window.localStorage.setItem(VIEW_KEY, v);
+    } catch (e) {
+      // Private mode: the choice lasts until the page reloads.
+    }
+  }
+
+  function currentView() {
+    return storedView() || (settings && settings.TabView) || 'cards';
+  }
+
+  function fetchByDate(filter) {
+    if (dateInflight[filter]) {
+      return dateInflight[filter];
+    }
+    var client = window.ApiClient;
+    dateInflight[filter] = client.ajax({
+      type: 'GET',
+      url: client.getUrl('EpisodeHistory/Recordings/ByDate', { filter: filter }),
+      dataType: 'json'
+    }).then(function (data) {
+      delete dateInflight[filter];
+      dateCache[filter] = { at: Date.now(), data: data };
+      return data;
+    }, function (err) {
+      delete dateInflight[filter];
+      dateCache[filter] = { at: Date.now(), data: (dateCache[filter] && dateCache[filter].data) || null };
+      throw err;
+    });
+    return dateInflight[filter];
+  }
+
+  function renderDate(section, filter) {
+    [].slice.call(section.querySelectorAll('.episodeHistoryRecordingsFilter[data-filter]')).forEach(function (b) {
+      b.classList.toggle('episodeHistoryRecordingsFilter-active', b.getAttribute('data-filter') === filter);
+    });
+    var cached = dateCache[filter];
+    if (cached && cached.data && section.ehDateShown !== cached) {
+      fillDate(section, cached);
+    }
+    if (!cached || Date.now() - cached.at > MAX_AGE_MS) {
+      fetchByDate(filter).then(function () {
+        var fresh = dateCache[filter];
+        if (section.isConnected && currentView() === 'date' && currentFilter() === filter && fresh.data) {
+          fillDate(section, fresh);
+        }
+      }).catch(function () { log('loading the list by date failed'); });
+    }
+  }
+
+  function dayStart(d) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  }
+
+  function dayLabel(d) {
+    var days = Math.round((dayStart(new Date()) - dayStart(d)) / 86400000);
+    if (days <= 0) {
+      return 'Today';
+    }
+    if (days === 1) {
+      return 'Yesterday';
+    }
+    if (days < 7) {
+      return 'Last ' + d.toLocaleDateString(undefined, { weekday: 'long' });
+    }
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+  }
+
+  function timeText(d) {
+    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function logoHtml(ch, big) {
+    var box = '<span class="ehLogo' + (big ? ' ehLogo-big' : '') + '"' + (ch ? ' title="' + esc(ch.Name) + '"' : '') + '>';
+    if (!ch) {
+      return box + '</span>';
+    }
+    if (ch.HasLogo) {
+      var src = window.ApiClient.getImageUrl(ch.Id, { type: 'Primary', maxHeight: big ? 96 : 120, quality: 90 });
+      return box + '<img src="' + esc(src) + '" alt="' + esc(ch.Name) + '" loading="lazy"></span>';
+    }
+    return box + '<span class="ehLogoText">' + esc(ch.Name) + '</span></span>';
+  }
+
+  function episodeNumbers(r) {
+    return r.Season != null && r.Episode != null ? 'S' + r.Season + ' E' + r.Episode : '';
+  }
+
+  function chipsHtml(r) {
+    var html = '';
+    if (r.Recording) {
+      html += '<span class="ehChip ehChip-rec">Recording</span>';
+    }
+    if (r.StatusShort) {
+      html += '<span class="ehChip ehChip-warn" title="' + esc(r.StatusText || '') + '">' + esc(r.StatusShort) + '</span>';
+    } else if (r.Partial) {
+      html += '<span class="ehChip ehChip-warn" title="Too short to count as recorded">Partial' + (r.Minutes ? ' · ' + r.Minutes + ' min' : '') + '</span>';
+    }
+    if (r.Archived) {
+      html += '<span class="ehChip">Archived</span>';
+    }
+    return html;
+  }
+
+  function dotHtml(r) {
+    var kind = r.Played ? 'yes' : r.PlayedPercent > 0 ? 'part' : 'no';
+    var label = r.Played ? 'Watched' : r.PlayedPercent > 0 ? r.PlayedPercent + '% watched' : 'Not watched';
+    return '<span class="ehDot ehDot-' + kind + '" role="img" aria-label="' + label + '" title="' + label + '"></span>';
+  }
+
+  function rowHtml(r, logoRight, selected) {
+    var d = new Date(r.RecordedUtc);
+    var sub = r.Type === 'Episode' ? (r.EpisodeTitle || '') : (r.Year ? String(r.Year) : '');
+    var meta = [episodeNumbers(r), r.Minutes ? r.Minutes + ' min' : ''].filter(Boolean).join(' · ');
+    var ch = r.Channel;
+    var logo = '<span class="ehLogoCol">' + logoHtml(ch, false) + '<span class="ehChNum">' + esc(ch ? ch.Number || '' : '') + '</span></span>';
+    return '<button type="button" class="ehDateRow' + (selected ? ' ehDateRow-selected' : '') + '" data-id="' + esc(r.Id) + '"'
+      + ' data-type="' + esc(r.Type) + '" data-played="' + !!r.Played + '">'
+      + dotHtml(r)
+      + (logoRight ? '' : logo)
+      + '<span class="ehDateText"><span class="ehDateTitle cardText-first">' + esc(r.Title) + '</span>'
+      + (chipsHtml(r) ? '<span class="ehChips">' + chipsHtml(r) + '</span>' : '')
+      + '<span class="ehDateSub"><span class="cardText-secondary">' + esc(sub) + '</span>'
+      + (meta ? ' <span class="ehMeta">' + esc(meta) + '</span>' : '')
+      + (logoRight ? ' <span class="ehMeta">' + esc(timeText(d)) + '</span>' : '') + '</span></span>'
+      + (logoRight ? logo : '<span class="ehTime">' + esc(timeText(d)) + '</span>')
+      + '</button>';
+  }
+
+  function detailHtml(r) {
+    var d = new Date(r.RecordedUtc);
+    var ch = r.Channel;
+    var img = window.ApiClient.getImageUrl(r.ImageId, { type: 'Primary', maxWidth: 640, quality: 90 });
+    var numbers = r.Season != null && r.Episode != null ? 'Season ' + r.Season + ', Episode ' + r.Episode : (r.Type === 'Movie' && r.Year ? String(r.Year) : '');
+    var tags = [];
+    if (r.Minutes) {
+      tags.push(r.Minutes + ' min');
+    }
+    tags.push(r.Played ? 'Watched' : r.PlayedPercent > 0 ? r.PlayedPercent + '% watched' : 'Not watched');
+    if (r.Archived) {
+      tags.push('Archived');
+    }
+    var status = '';
+    if (r.Recording) {
+      status = '<div class="ehStatus ehStatus-rec">Recording now</div>';
+    } else if (r.StatusText || r.Partial) {
+      status = '<div class="ehStatus"><div class="ehStatusHead">' + esc(r.StatusShort || 'Partial recording') + '</div>'
+        + '<div>' + esc(r.StatusText || 'Too short to count as recorded. The "…" menu can keep it or record it again.') + '</div></div>';
+    }
+    return '<img class="ehDetailImg" src="' + esc(img) + '" alt="">'
+      + '<h2 class="ehDetailTitle">' + esc(r.Title) + '</h2>'
+      + (r.EpisodeTitle ? '<div class="ehDetailEp">' + esc(r.EpisodeTitle) + '</div>' : '')
+      + (numbers ? '<div class="ehDetailMeta">' + esc(numbers) + '</div>' : '')
+      + '<div class="ehDetailChannel">' + (ch ? logoHtml(ch, true) : '')
+      + '<span>' + esc([ch ? [ch.Number, ch.Name].filter(Boolean).join(' ') : '', dayLabel(d) + ' ' + timeText(d)].filter(Boolean).join(' · ')) + '</span></div>'
+      + '<div class="ehTags">' + tags.map(function (t) { return '<span class="ehChip">' + esc(t) + '</span>'; }).join('') + '</div>'
+      + status
+      + (r.Overview ? '<p class="ehOverview">' + esc(r.Overview) + '</p>' : '')
+      + '<div class="ehActions">'
+      + '<button type="button" class="ehBtn ehBtn-primary" data-eh-act="play"><span class="material-icons play_arrow" aria-hidden="true"></span>Play</button>'
+      + '<button type="button" class="ehBtn" data-eh-act="open"><span class="material-icons info" aria-hidden="true"></span>Open</button>'
+      + '<button type="button" class="ehBtn" data-eh-act="menu" aria-label="More"><span class="material-icons more_horiz" aria-hidden="true"></span>More</button>'
+      + '</div>';
+  }
+
+  function fillDate(section, cached) {
+    section.ehDateShown = cached;
+    var data = cached.data || {};
+    var list = section.querySelector('.ehDate');
+    var recordings = data.Recordings || [];
+    if (!recordings.length) {
+      list.innerHTML = '';
+      list.appendChild(el('div', 'episodeHistoryRecordingsEmpty', 'No recordings yet.'));
+      return;
+    }
+    var logoRight = data.DateLogo === 'right';
+    var selected = section.getAttribute('data-eh-selected');
+    if (!recordings.some(function (r) { return r.Id === selected; })) {
+      selected = recordings[0].Id;
+    }
+    var html = '<div class="ehDateList' + (logoRight ? ' ehDateList-logoRight' : '') + '">';
+    var day = null;
+    recordings.forEach(function (r) {
+      var d = new Date(r.RecordedUtc);
+      var label = r.Recording ? 'Recording now' : dayLabel(d);
+      if (label !== day) {
+        if (day !== null) {
+          html += '</div></section>';
+        }
+        day = label;
+        html += '<section class="ehDay"><h3 class="ehDayHead">' + esc(label)
+          + (r.Recording || label.indexOf('Last ') !== 0 && label !== 'Today' && label !== 'Yesterday' ? ''
+            : ' <span class="ehDayDate">' + esc(d.toLocaleDateString(undefined, { month: 'long', day: 'numeric' })) + '</span>')
+          + '</h3><div class="ehDayRows">';
+      }
+      html += rowHtml(r, logoRight, r.Id === selected);
+    });
+    html += '</div></section></div><aside class="ehDateDetail" aria-label="Selected recording"></aside>';
+    list.innerHTML = html;
+    showDetail(section, recordings, selected);
+  }
+
+  function showDetail(section, recordings, id) {
+    var r = recordings.filter(function (x) { return x.Id === id; })[0];
+    var aside = section.querySelector('.ehDateDetail');
+    if (!r || !aside) {
+      return;
+    }
+    section.setAttribute('data-eh-selected', id);
+    [].slice.call(section.querySelectorAll('.ehDateRow')).forEach(function (row) {
+      row.classList.toggle('ehDateRow-selected', row.getAttribute('data-id') === id);
+    });
+    aside.innerHTML = detailHtml(r);
+  }
+
+  // Something changed (watched, deleted, kept…): reload what the lists show.
+  function changed() {
+    cache = {};
+    dateCache = {};
+    scheduleCheck();
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.closest) {
+      return;
+    }
+    var section = t.closest('.' + SECTION_CLASS);
+    var row = t.closest('.ehDateRow');
+    if (row && section) {
+      var data = (section.ehDateShown && section.ehDateShown.data) || {};
+      showDetail(section, data.Recordings || [], row.getAttribute('data-id'));
+      return;
+    }
+    var act = t.closest('[data-eh-act]');
+    if (!act || !section) {
+      return;
+    }
+    var id = section.getAttribute('data-eh-selected');
+    var selectedRow = id && section.querySelector('.ehDateRow[data-id="' + id + '"]');
+    if (!selectedRow) {
+      return;
+    }
+    var action = act.getAttribute('data-eh-act');
+    if (action === 'play') {
+      playItem(id);
+    } else if (action === 'open') {
+      window.location.hash = '#/details?id=' + id;
+    } else if (action === 'menu') {
+      openMenu(selectedRow, act);
+    }
+  });
 
   function addStyles() {
     if (document.getElementById('episodeHistoryRecordingsStyle')) {
@@ -406,10 +713,59 @@
       '.episodeHistoryPartialChip { position: absolute; right: .4em; bottom: .4em; display: flex; align-items: center; gap: .15em;',
       '  background: #f59e0b; color: #1a1a1a; font-weight: 600; border-radius: .3em; padding: .1em .35em; font-size: .8em; }',
       '.episodeHistoryPartialChip .material-icons { font-size: 1.2em; }',
+      '.episodeHistoryStalledChip { background: #d84315; color: #fff; }',
       '.episodeHistoryRecordingChip { position: absolute; right: .4em; top: .4em; display: flex; align-items: center; gap: .15em;',
       '  background: #c62828; color: #fff; font-weight: 600; border-radius: .3em; padding: .1em .35em; font-size: .8em; }',
       '.episodeHistoryRecordingChip .material-icons { font-size: 1em; }',
-      '.' + SHOW_CLASS + ' .episodeHistoryRecordingsItems { padding-left: 0; }'
+      '.' + SHOW_CLASS + ' .episodeHistoryRecordingsItems { padding-left: 0; }',
+      '.ehDate { display: flex; flex-wrap: wrap; gap: 1.5em; padding: .5em 3.3% 2em; align-items: flex-start; }',
+      '.ehDateList { flex: 999 1 560px; min-width: 0; }',
+      '.ehDateDetail { flex: 1 1 340px; min-width: 0; position: sticky; top: 5em; display: flex; flex-direction: column; gap: .7em; }',
+      '.ehDay { margin-bottom: 1.4em; }',
+      '.ehDayHead { margin: 0 0 .5em .2em; font-size: 1.05em; font-weight: 600; }',
+      '.ehDayDate { font-weight: 400; opacity: .6; margin-left: .4em; }',
+      '.ehDayRows { background: rgba(255,255,255,.04); border-radius: .7em; overflow: hidden; }',
+      '.ehDateRow { all: unset; box-sizing: border-box; width: 100%; display: flex; gap: .9em; align-items: center; padding: .7em 1em;',
+      '  border-top: 1px solid rgba(255,255,255,.06); cursor: pointer; }',
+      '.ehDayRows > .ehDateRow:first-child { border-top: 0; }',
+      '.ehDateRow:hover { background: rgba(255,255,255,.05); }',
+      '.ehDateRow:focus-visible { outline: 2px solid #00a4dc; outline-offset: -2px; }',
+      '.ehDateRow-selected { background: rgba(0,164,220,.16); box-shadow: inset 3px 0 0 #00a4dc; }',
+      '.ehDot { width: .7em; height: .7em; border-radius: 50%; flex-shrink: 0; box-sizing: border-box; }',
+      '.ehDot-no { background: #00a4dc; }',
+      '.ehDot-part { border: 2px solid #00a4dc; background: linear-gradient(90deg, transparent 50%, #00a4dc 50%); }',
+      '.ehDot-yes { border: 2px solid rgba(255,255,255,.35); }',
+      '.ehLogoCol { width: 6.2em; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: .15em; }',
+      '.ehLogo { width: 6.2em; height: 3.4em; box-sizing: border-box; padding: .3em .45em; border-radius: .45em; background: rgba(255,255,255,.06);',
+      '  display: flex; align-items: center; justify-content: center; overflow: hidden; }',
+      '.ehLogo img { max-width: 100%; max-height: 100%; object-fit: contain; }',
+      '.ehLogoText { font-size: .72em; font-weight: 700; text-align: center; line-height: 1.15; opacity: .9; }',
+      '.ehLogo-big { width: 4.6em; height: 2.6em; flex-shrink: 0; }',
+      '.ehChNum { font-size: .8em; font-weight: 600; opacity: .75; min-height: 1em; }',
+      '.ehDateText { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: .2em; }',
+      '.ehDateTitle { font-weight: 600; font-size: 1.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '.ehDateSub { font-size: .85em; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '.ehMeta { opacity: .7; margin-left: .5em; }',
+      '.ehTime { font-size: .85em; opacity: .7; flex-shrink: 0; }',
+      '.ehChips, .ehTags { display: flex; flex-wrap: wrap; gap: .35em; }',
+      '.ehChip { font-size: .72em; padding: .1em .5em; border-radius: .35em; background: rgba(255,255,255,.1); }',
+      '.ehChip-rec { background: #c62828; color: #fff; font-weight: 700; }',
+      '.ehChip-warn { background: #f59e0b; color: #1a1a1a; font-weight: 600; }',
+      '.ehDetailImg { width: 100%; max-width: 30em; aspect-ratio: 16 / 9; object-fit: cover; border-radius: .5em; background: rgba(255,255,255,.05); }',
+      '.ehDetailTitle { margin: .2em 0 0; font-size: 1.4em; font-weight: 600; }',
+      '.ehDetailEp { font-size: 1.1em; }',
+      '.ehDetailMeta { opacity: .7; font-size: .9em; }',
+      '.ehDetailChannel { display: flex; align-items: center; gap: .6em; font-size: .9em; opacity: .9; }',
+      '.ehStatus { background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.45); border-radius: .5em; padding: .7em .9em; font-size: .9em; line-height: 1.45; }',
+      '.ehStatusHead { font-weight: 600; color: #fbbf24; margin-bottom: .2em; }',
+      '.ehStatus-rec { background: rgba(198,40,40,.18); border-color: rgba(198,40,40,.6); font-weight: 600; }',
+      '.ehOverview { margin: 0; line-height: 1.55; opacity: .9; }',
+      '.ehActions { display: flex; flex-wrap: wrap; gap: .6em; }',
+      '.ehBtn { display: inline-flex; align-items: center; gap: .35em; min-height: 2.6em; padding: 0 1.1em; border-radius: .4em; border: 0;',
+      '  background: rgba(255,255,255,.1); color: inherit; font: inherit; cursor: pointer; }',
+      '.ehBtn:hover { background: rgba(255,255,255,.18); }',
+      '.ehBtn-primary { background: #00a4dc; color: #fff; }',
+      '.ehBtn-primary:hover { background: #0bb4ee; }'
     ].join('\n');
     document.head.appendChild(style);
   }
@@ -531,7 +887,8 @@
         id: r.Id, type: 'Episode', shape: 'backdrop', name: r.Name, subtitle: recordedDate(r.RecordedUtc),
         image: window.ApiClient.getImageUrl(r.Id, { type: 'Primary', fillWidth: 480, fillHeight: 270, quality: 96 }),
         count: 1, unplayed: r.Played ? 0 : 1, played: r.Played, archived: r.Archived ? 1 : 0,
-        partial: r.Partial ? 1 : 0, partialMinutes: r.Minutes, recording: r.Recording ? 1 : 0
+        partial: r.Partial ? 1 : 0, partialMinutes: r.Minutes, recording: r.Recording ? 1 : 0,
+        stallText: r.StallText, stallTitle: r.StallTitle
       });
     }).join('');
     section.appendChild(scroller);
@@ -634,6 +991,9 @@
     var id = card.getAttribute('data-id');
     var call = played ? client.markPlayed(client.getCurrentUserId(), id, new Date()) : client.markUnplayed(client.getCurrentUserId(), id);
     return Promise.resolve(call).then(function () {
+      if (card.classList.contains('ehDateRow')) {
+        changed();
+      }
       var button = card.querySelector('[is="emby-playstatebutton"]');
       if (button) {
         button.setAttribute('data-played', played ? 'true' : 'false');
@@ -709,6 +1069,25 @@
       var chip = card.querySelector('.episodeHistoryRecordingChip');
       chip && chip.parentNode.removeChild(chip);
     });
+    if (single) {
+      var stateAfter = box.lastChild;
+      recordingStateEntries(id, function (icon, label, onClick) {
+        if (box.isConnected) {
+          var entry = menuItem(icon, label, function () { closeMenu(); onClick(); });
+          box.insertBefore(entry, stateAfter.nextSibling);
+          stateAfter = entry;
+        }
+      }, function (text) {
+        if (box.isConnected) {
+          var why = el('div', null, text);
+          why.style.cssText = 'padding:.5em 1em;font-size:.85em;line-height:1.35;color:#ffab91;border-bottom:1px solid rgba(255,255,255,.1);';
+          box.insertBefore(why, title.nextSibling);
+        }
+      }, function () {
+        var chip = card.querySelector('.episodeHistoryPartialChip');
+        chip && chip.parentNode.removeChild(chip);
+      });
+    }
     if (!single) {
       showDeleteEntry(id, name, function (label, onClick) {
         if (box.isConnected) {
@@ -739,7 +1118,11 @@
         client.deleteItem(id).then(function () {
           log('deleted ' + id + ' in ' + (Date.now() - started) + ' ms');
           closeMenu();
+          var listed = card.classList.contains('ehDateRow');
           card.parentNode && card.parentNode.removeChild(card);
+          if (listed) {
+            changed();
+          }
         }, function () {
           text.textContent = 'Could not delete it';
         });
@@ -791,6 +1174,67 @@
     } else {
       log(message);
     }
+  }
+
+  /*
+   * A partial or stalled recording (the tuner went quiet while it was being made): "Keep it"
+   * counts it as recorded / clears the warning, "Record again" schedules the programme's next
+   * airing and leaves this file alone. Calls add(icon, label, onClick) per action the caller
+   * may take and explain(text) with the story of a stall.
+   */
+  function recordingStateEntries(id, add, explain, onKept) {
+    var client = window.ApiClient;
+    client.ajax({ type: 'GET', url: client.getUrl('EpisodeHistory/Item/' + id + '/RecordingState'), dataType: 'json' }).then(function (r) {
+      if (!r || !(r.Partial || r.Stalled || r.Pieces > 1)) {
+        return;
+      }
+      if (r.Stalled && r.Text && explain) {
+        explain(r.Text);
+      }
+      if (r.CanKeep && r.Pieces > 1) {
+        add('merge', 'Join the ' + r.Pieces + ' pieces into one recording', function () {
+          client.ajax({ type: 'POST', url: client.getUrl('EpisodeHistory/Item/' + id + '/JoinPieces'), dataType: 'json' }).then(function () {
+            cache = {};
+            dateCache = {};
+            showCache = {};
+            notify('Joining the ' + r.Pieces + ' pieces. The one recording takes their place in a minute or two.');
+          }, function () {
+            notify('The pieces couldn\'t be joined.');
+          });
+        });
+      }
+      if (r.CanKeep && (r.Partial || r.Stalled)) {
+        add('task_alt', r.Partial ? 'Keep it: count as recorded' : 'Keep it as it is', function () {
+          client.ajax({ type: 'POST', url: client.getUrl('EpisodeHistory/Item/' + id + '/KeepRecording'), dataType: 'json' }).then(function () {
+            cache = {};
+            dateCache = {};
+            showCache = {};
+            log('kept recording ' + id);
+            if (onKept) {
+              onKept();
+            }
+            scheduleCheck();
+          }, function () {
+            notify('The recording couldn\'t be marked as kept.');
+          });
+        });
+      }
+      if (r.CanRecordAgain && (r.Partial || r.Stalled)) {
+        add('replay', 'Record again at the next airing', function () {
+          client.ajax({ type: 'POST', url: client.getUrl('EpisodeHistory/Item/' + id + '/RecordAgain'), dataType: 'json' }).then(function (a) {
+            if (!a || (!a.Scheduled && !a.AlreadyScheduled)) {
+              notify((a && a.Message) || 'The guide has no later airing of it yet.');
+              return;
+            }
+            var when = new Date(a.Start).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+            notify((a.AlreadyScheduled ? 'A recording is already set for ' : 'Recording it again on ') + when
+              + (a.Channel ? ' (' + a.Channel + ')' : '') + '. This recording is kept until you delete it.');
+          }, function () {
+            notify('The next airing couldn\'t be scheduled.');
+          });
+        });
+      }
+    }).catch(function () {});
   }
 
   // Calls add(label, onClick) when there's something the caller may delete.
@@ -851,6 +1295,7 @@
       client.ajax({ type: 'DELETE', url: seriesDeleteUrl(id), dataType: 'json' }).then(function (done) {
         close();
         cache = {};
+        dateCache = {};
         notify('Deleted ' + done.Deleted + ' recording' + (done.Deleted === 1 ? '' : 's') + ' of ' + name + '.'
           + (done.Skipped ? ' ' + done.Skipped + ' left (recording now, or not yours to delete).' : ''));
         if (onDeleted) {
@@ -934,6 +1379,7 @@
       client.ajax({ type: 'POST', url: client.getUrl('EpisodeHistory/Item/' + rec.Id + '/StopRecording'), dataType: 'json' }).then(function () {
         close();
         cache = {};
+        dateCache = {};
         showCache = {};
         log('stopped recording ' + rec.Id);
         if (onStopped) {
@@ -1024,6 +1470,19 @@
         });
       }
       if (item.Type !== 'Series') {
+        var stateCount = 0;
+        recordingStateEntries(id, function (icon, label, onClick) {
+          if (scroller.isConnected) {
+            scroller.appendChild(sheetEntry('episodehistory-recordingstate-' + (stateCount++), icon, label, onClick));
+          }
+        }, function (text) {
+          if (scroller.isConnected) {
+            var why = document.createElement('div');
+            why.style.cssText = 'padding:.6em 1.2em;font-size:.9em;line-height:1.35;color:#ffab91;max-width:26em;';
+            why.textContent = text;
+            scroller.insertBefore(why, scroller.firstChild);
+          }
+        });
         return;
       }
       showDeleteEntry(id, item.Name, function (label, onClick) {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -74,6 +75,12 @@ public sealed class HistoryEvents : IHostedService, IDisposable
     // Files that appeared in a recordings folder, waiting out AddedDelay. Keyed by path.
     private readonly ConcurrentDictionary<string, (Guid ItemId, DateTime DueUtc)> _added = new(StringComparer.Ordinal);
     private static readonly TimeSpan TidyDelay = TimeSpan.FromSeconds(3);
+
+    // No growth over more than one poll: no data is arriving.
+    private static readonly TimeSpan StallAfter = TimeSpan.FromSeconds(45);
+    private readonly StallNotes _stalls;
+    private readonly Programmes _programmes;
+    private readonly RecordingRepair _repair;
     private Timer? _poll;
     private int _polling;
 
@@ -85,8 +92,14 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         IUserManager userManager,
         HistoryStore store,
         GuideSweeper sweeper,
+        StallNotes stalls,
+        Programmes programmes,
+        RecordingRepair repair,
         ILogger<HistoryEvents> logger)
     {
+        _stalls = stalls;
+        _programmes = programmes;
+        _repair = repair;
         _libraryManager = libraryManager;
         _userDataManager = userDataManager;
         _recordingsManager = recordingsManager;
@@ -99,12 +112,61 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
     private sealed record PendingRecording(Guid ItemId, EpisodeIdentity Identity, string Title, DateTime ProgramStart, DateTime ProgramEnd, DateTime FirstSeenUtc)
     {
+        /// <summary>The airing it is a piece of (see <see cref="Programmes.KeyFor"/>).</summary>
+        public string Key { get; init; } = string.Empty;
+
+        /// <summary>The DVR's id of the timer recording it.</summary>
+        public string? TimerId { get; init; }
+
         /// <summary>When the DVR was first seen to have stopped writing it.</summary>
         public DateTime? EndedUtc { get; set; }
+
+        private long _length;
+        private DateTime _grewUtc = FirstSeenUtc;
+        private DateTime? _stallStartUtc;
+        private TimeSpan _stalled;
+
+        /// <summary>When the file first stopped growing while the recording went on (the tuner went quiet).</summary>
+        public DateTime? FirstStallUtc { get; private set; }
+
+        /// <summary>
+        /// Notes the file's size at a poll. A file that hasn't grown for longer than a poll or
+        /// two is stalled from when it last grew, until it grows again.
+        /// </summary>
+        public void Track(long length, DateTime now)
+        {
+            if (length > _length)
+            {
+                if (_stallStartUtc is { } start)
+                {
+                    _stalled += now - start;
+                    _stallStartUtc = null;
+                }
+
+                _length = length;
+                _grewUtc = now;
+            }
+            else if (_stallStartUtc is null && now - _grewUtc > StallAfter)
+            {
+                _stallStartUtc = _grewUtc;
+                FirstStallUtc ??= _grewUtc;
+            }
+        }
+
+        /// <summary>How long the recording ran without receiving anything, up to <paramref name="end"/>.</summary>
+        public TimeSpan StalledUntil(DateTime end) =>
+            _stalled + (_stallStartUtc is { } start && end > start ? end - start : TimeSpan.Zero);
     }
 
     /// <summary>The running instance, for the recordings list (which can't take it as a dependency).</summary>
     public static HistoryEvents? Current { get; private set; }
+
+    /// <summary>
+    /// Timers cancelled lately, by the DVR's id. Cancelling a one-off recording while it runs
+    /// (the clients' "stop recording") leaves its timer "Completed" in Jellyfin 12, so the event
+    /// is the only sign that it was stopped rather than cut short.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, DateTime> _cancelledTimers = new(StringComparer.Ordinal);
 
     /// <summary>Paths a stop was just asked for, until the DVR lets go of the file.</summary>
     private static readonly ConcurrentDictionary<string, DateTime> Stopping = new(StringComparer.Ordinal);
@@ -131,9 +193,11 @@ public sealed class HistoryEvents : IHostedService, IDisposable
     public Task StartAsync(CancellationToken cancellationToken)
     {
         Current = this;
+        CloseOpenPieces();
         _libraryManager.ItemAdded += OnItemAdded;
         _libraryManager.ItemRemoved += OnItemRemoved;
         _userDataManager.UserDataSaved += OnUserDataSaved;
+        _liveTvManager.TimerCancelled += OnTimerCancelled;
         _poll = new Timer(_ => _ = PollAsync(), null, PollInterval, PollInterval);
         return Task.CompletedTask;
     }
@@ -143,6 +207,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         _libraryManager.ItemAdded -= OnItemAdded;
         _libraryManager.ItemRemoved -= OnItemRemoved;
         _userDataManager.UserDataSaved -= OnUserDataSaved;
+        _liveTvManager.TimerCancelled -= OnTimerCancelled;
         _poll?.Change(Timeout.Infinite, Timeout.Infinite);
         return Task.CompletedTask;
     }
@@ -159,10 +224,18 @@ public sealed class HistoryEvents : IHostedService, IDisposable
             new RecordingQuery { UserId = userId, IsInProgress = true, EnableImages = false },
             RecordingDtoOptions).ConfigureAwait(false);
 
-        foreach (var dto in result.Items)
+        // A recording going on after a restart is another version ("Name - 1.ts") of the item
+        // the first piece made, and the query above lists only that item: Jellyfin's own timer
+        // list knows what is really being written.
+        var active = result.Items.Select(dto => (Path: (string?)dto.Path, dto.Id))
+            .Concat(TimerStatuses().Where(t => t.Value == "InProgress")
+                .Select(t => _recordingsManager.GetActiveRecordingPath(t.Key))
+                .Select(path => (Path: path, Id: Guid.Empty)))
+            .ToList();
+        foreach (var (path, itemId) in active)
         {
-            if (string.IsNullOrEmpty(dto.Path) || _pending.ContainsKey(dto.Path)
-                || _recordingsManager.GetActiveRecordingInfo(dto.Path)?.Timer is not { } timer)
+            if (string.IsNullOrEmpty(path) || _pending.ContainsKey(path)
+                || _recordingsManager.GetActiveRecordingInfo(path)?.Timer is not { } timer)
             {
                 continue;
             }
@@ -174,18 +247,27 @@ public sealed class HistoryEvents : IHostedService, IDisposable
                 identity = identity with { ProgramId = showId };
             }
 
+            // Seen within a poll or so of its planned start: it has run since that start (so a
+            // short programme recorded without padding isn't a few percent short for nothing).
+            var now = DateTime.UtcNow;
+            var planned = timer.StartDate.AddSeconds(-Math.Max(0, timer.PrePaddingSeconds));
             var pending = new PendingRecording(
-                dto.Id,
+                itemId,
                 identity,
                 Describe(timer.Name, marker.Strip(timer.EpisodeTitle)),
                 timer.StartDate,
                 timer.EndDate,
-                DateTime.UtcNow);
-            if (_pending.TryAdd(dto.Path, pending))
+                now >= planned && now - planned <= TimeSpan.FromSeconds(60) ? planned : now)
+            {
+                Key = Programmes.KeyFor(timer.ChannelId, timer.ProgramId, timer.EndDate),
+                TimerId = timer.Id
+            };
+            if (_pending.TryAdd(path, pending))
             {
                 _logger.LogInformation(
                     "Tracking recording {Title} (program id {ProgramId}) at {Path}",
-                    pending.Title, pending.Identity.ValidProgramId ?? "none", dto.Path);
+                    pending.Title, pending.Identity.ValidProgramId ?? "none", path);
+                NotePieceStarted(path, pending, timer.ChannelId);
             }
         }
     }
@@ -236,6 +318,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
             {
                 if (_recordingsManager.GetActiveRecordingInfo(path) is not null)
                 {
+                    pending.Track(FileLength(path), DateTime.UtcNow);
                     continue;
                 }
 
@@ -257,6 +340,15 @@ public sealed class HistoryEvents : IHostedService, IDisposable
             }
 
             ProcessAdded();
+
+            try
+            {
+                await _repair.ProcessAsync(_pending.ContainsKey, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to look after split or incomplete recordings");
+            }
 
             foreach (var (path, handled) in _dvrHandled)
             {
@@ -320,7 +412,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
             try
             {
-                var item = _libraryManager.GetItemById(itemId) ?? _libraryManager.FindByPath(path, false);
+                var item = _libraryManager.GetItemById(itemId) ?? RecordingFiles.ItemAt(_libraryManager, path);
                 if (item is null)
                 {
                     continue;
@@ -354,13 +446,35 @@ public sealed class HistoryEvents : IHostedService, IDisposable
     /// <returns>False while still waiting for Jellyfin to (re)add the finished recording to the library.</returns>
     private bool TryComplete(string path, PendingRecording pending)
     {
-        var item = _libraryManager.GetItemById(pending.ItemId) ?? _libraryManager.FindByPath(path, false);
+        var item = (pending.ItemId.Equals(Guid.Empty) ? null : _libraryManager.GetItemById(pending.ItemId)) ?? RecordingFiles.ItemAt(_libraryManager, path);
         if (item is null || !File.Exists(path))
         {
             if (DateTime.UtcNow - pending.EndedUtc!.Value < LibraryWait && File.Exists(path))
             {
                 return false;
             }
+
+            // The file is there but the library never showed it: still a piece of its airing
+            // (to join and to count), just without a history row of its own.
+            if (File.Exists(path))
+            {
+                var kept = pending.StalledUntil(pending.EndedUtc!.Value);
+                NotePieceEnded(path, pending, pending.EndedUtc!.Value - pending.FirstSeenUtc - kept, kept);
+                _logger.LogInformation("Recording {Title} ended but isn't in the library; kept as a piece of its airing", pending.Title);
+                return true;
+            }
+
+            _programmes.Change(all =>
+            {
+                if (all.TryGetValue(pending.Key, out var gone))
+                {
+                    gone.Pieces.RemoveAll(x => x.Path == path);
+                    if (gone.Pieces.Count == 0)
+                    {
+                        all.Remove(pending.Key);
+                    }
+                }
+            });
 
             _logger.LogInformation("Recording {Title} ended but its file/item is gone; not recorded in history", pending.Title);
             return true;
@@ -381,10 +495,28 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         _bufferNoted.TryRemove(path, out _);
 
         // Measured from when the poll first saw it (within 30 s of the DVR starting) to when
-        // it stopped, against the programme's scheduled length without padding.
-        var scheduled = pending.ProgramEnd - pending.ProgramStart;
-        var ran = pending.EndedUtc!.Value - pending.FirstSeenUtc;
+        // it stopped, against the programme's scheduled length without padding. Time the file
+        // didn't grow (the tuner went quiet, Jellyfin kept the recording open) isn't recorded time.
+        // An interrupted recording goes on in another file: its pieces count together.
+        var stalled = pending.StalledUntil(pending.EndedUtc!.Value);
+        var piece = pending.EndedUtc!.Value - pending.FirstSeenUtc - stalled;
+        var programme = NotePieceEnded(path, pending, piece, stalled);
+        var scheduled = programme is null ? pending.ProgramEnd - pending.ProgramStart : TimeSpan.FromSeconds(programme.ScheduledSeconds);
+        var ran = programme is null ? piece : TimeSpan.FromSeconds(programme.CapturedSeconds);
         var percent = scheduled > TimeSpan.Zero ? ran / scheduled * 100 : 100;
+        if (Config.StallWarnSeconds > 0 && stalled.TotalSeconds >= Config.StallWarnSeconds && pending.FirstStallUtc is { } firstStall)
+        {
+            _stalls.Set(path, new StallNotes.Note(
+                firstStall,
+                (int)Math.Max(1, Math.Round(stalled.TotalMinutes)),
+                (int)Math.Round(piece.TotalMinutes),
+                (int)Math.Round(scheduled.TotalMinutes),
+                DateTime.UtcNow));
+            _logger.LogWarning(
+                "Recording {Title} stalled: no data from {At:HH:mm:ss} for {Lost:F0} min in all; {Ran:F0} of {Scheduled:F0} minutes are in the file",
+                pending.Title, firstStall.ToLocalTime(), stalled.TotalMinutes, ran.TotalMinutes, scheduled.TotalMinutes);
+        }
+
         if (percent < Config.MinRecordedPercent)
         {
             _logger.LogInformation(
@@ -400,6 +532,13 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         var identity = pending.Identity with { SeriesAlt = libraryIdentity?.SeriesName };
 
         _store.Upsert(HistoryStore.KindRecorded, null, item.Id, identity, "recording", DateTime.UtcNow);
+        _programmes.Change(all =>
+        {
+            if (all.TryGetValue(pending.Key, out var counted))
+            {
+                counted.Counted = true;
+            }
+        });
         _logger.LogInformation("Recorded in history: {Title} ({Percent:F0}% of scheduled length)", pending.Title, percent);
 
         StripMarkFromName(item, marker);
@@ -469,6 +608,20 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         }
     }
 
+    private void OnTimerCancelled(object? sender, Jellyfin.Data.Events.GenericEventArgs<TimerEventInfo> e)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var old in _cancelledTimers.Where(x => now - x.Value > TimeSpan.FromHours(12)).Select(x => x.Key).ToList())
+        {
+            _cancelledTimers.TryRemove(old, out _);
+        }
+
+        if (e.Argument?.Id is { Length: > 0 } id)
+        {
+            _cancelledTimers[id] = now;
+        }
+    }
+
     private void OnItemRemoved(object? sender, ItemChangeEventArgs e)
     {
         try
@@ -511,6 +664,122 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to tidy up after {Path}", path);
+        }
+    }
+
+    private void NotePieceStarted(string path, PendingRecording pending, string? channelId) =>
+        _programmes.Change(all =>
+        {
+            if (!all.TryGetValue(pending.Key, out var p))
+            {
+                // Jellyfin's retry after a failure moves the timer's start: the first piece has the programme's own times.
+                all[pending.Key] = p = new Programmes.Programme
+                {
+                    Key = pending.Key,
+                    Title = pending.Title,
+                    Identity = pending.Identity,
+                    ChannelId = channelId,
+                    ProgramStartUtc = pending.ProgramStart,
+                    ProgramEndUtc = pending.ProgramEnd,
+                    CreatedUtc = DateTime.UtcNow,
+                    IsBuffer = LiveBuffers.IsUnkeptBuffer(path)
+                };
+            }
+
+            if (p.Pieces.All(x => x.Path != path))
+            {
+                p.Pieces.Add(new Programmes.Piece { Path = path, FirstSeenUtc = pending.FirstSeenUtc });
+            }
+        });
+
+    private Programmes.Programme? NotePieceEnded(string path, PendingRecording pending, TimeSpan captured, TimeSpan stalled)
+    {
+        Programmes.Programme? result = null;
+        var status = pending.TimerId is { } id && TimerStatuses().TryGetValue(id, out var s) ? s : null;
+        _programmes.Change(all =>
+        {
+            if (!all.TryGetValue(pending.Key, out var p) || p.Pieces.FirstOrDefault(x => x.Path == path) is not { } piece)
+            {
+                return;
+            }
+
+            piece.EndedUtc = pending.EndedUtc;
+            piece.CapturedSeconds = Math.Max(0, captured.TotalSeconds);
+            piece.StalledSeconds = stalled.TotalSeconds;
+            piece.FirstStallUtc = pending.FirstStallUtc;
+            piece.StoppedByUser = IsStopping(path);
+
+            // A one-off timer that was cancelled is gone; a series recording's is marked.
+            piece.Cancelled = status is null or "Cancelled"
+                || (pending.TimerId is { } timerId && _cancelledTimers.ContainsKey(timerId));
+            result = p;
+        });
+        return result;
+    }
+
+    /// <summary>
+    /// Pieces that were being recorded when the server went down end where their file does (the
+    /// recording goes on in a new file when the server is back).
+    /// </summary>
+    private void CloseOpenPieces()
+    {
+        try
+        {
+            _programmes.Change(all =>
+            {
+                foreach (var piece in all.Values.SelectMany(p => p.Pieces).Where(x => x.EndedUtc is null))
+                {
+                    var written = File.Exists(piece.Path) ? File.GetLastWriteTimeUtc(piece.Path) : piece.FirstSeenUtc;
+                    piece.EndedUtc = written > piece.FirstSeenUtc ? written : piece.FirstSeenUtc;
+                    piece.CapturedSeconds = (piece.EndedUtc.Value - piece.FirstSeenUtc).TotalSeconds;
+                    piece.ClosedAtStartup = true;
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Couldn't close the recordings a restart interrupted");
+        }
+    }
+
+    /// <summary>Jellyfin's timers and their status ("New", "InProgress", "Cancelled"…), by the DVR's id, from its timers.json.</summary>
+    private Dictionary<string, string> TimerStatuses()
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            var file = Plugin.Instance?.DataPath is { } data ? Path.Combine(data, "livetv", "timers.json") : null;
+            if (file is null || !File.Exists(file))
+            {
+                return result;
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
+            foreach (var t in doc.RootElement.EnumerateArray())
+            {
+                if (t.TryGetProperty("Id", out var id) && id.GetString() is { } key && t.TryGetProperty("Status", out var status))
+                {
+                    result[key] = status.ValueKind == System.Text.Json.JsonValueKind.String ? status.GetString() ?? string.Empty : status.ToString();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "Can't read Jellyfin's timers.json");
+        }
+
+        return result;
+    }
+
+    private static long FileLength(string path)
+    {
+        try
+        {
+            return new FileInfo(path).Length;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return 0;
         }
     }
 

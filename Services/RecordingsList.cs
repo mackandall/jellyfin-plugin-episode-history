@@ -39,6 +39,8 @@ public sealed class RecordingsList
     private readonly ILibraryManager _libraryManager;
     private readonly IRecordingsManager _recordingsManager;
     private readonly IUserDataManager _userDataManager;
+    private readonly RecordingRepair _repair;
+    private readonly RecordingChannels _channels;
     private readonly ILogger<RecordingsList> _logger;
     private readonly object _lock = new();
     private readonly Dictionary<long, DateTime> _lastRelinkTry = new();
@@ -48,8 +50,12 @@ public sealed class RecordingsList
         ILibraryManager libraryManager,
         IRecordingsManager recordingsManager,
         IUserDataManager userDataManager,
+        RecordingRepair repair,
+        RecordingChannels channels,
         ILogger<RecordingsList> logger)
     {
+        _channels = channels;
+        _repair = repair;
         _store = store;
         _libraryManager = libraryManager;
         _recordingsManager = recordingsManager;
@@ -78,7 +84,10 @@ public sealed class RecordingsList
         DateTime RecordedUtc,
         int PartialCount = 0,
         int? PartialMinutes = null,
-        int RecordingCount = 0);
+        int RecordingCount = 0,
+        int StalledCount = 0,
+        string? StallText = null,
+        string? StallTitle = null);
 
     /// <summary>
     /// Every recording still in the library, newest first. Records file names of rows that
@@ -172,6 +181,85 @@ public sealed class RecordingsList
         return groups.Take(Math.Clamp(limit, 1, 200)).Select(g => ToCard(g, user, other)).ToList();
     }
 
+    /// <summary>One recording in the list by date (SageTV's and Channels DVR's recent recordings).</summary>
+    public sealed record DateEntry(
+        Guid Id,
+        string Type,
+        Guid ImageId,
+        string Title,
+        string? EpisodeTitle,
+        int? Season,
+        int? Episode,
+        int? Year,
+        DateTime RecordedUtc,
+        int? Minutes,
+        bool Played,
+        int PlayedPercent,
+        bool Archived,
+        bool Recording,
+        bool Partial,
+        string? StatusShort,
+        string? StatusText,
+        string? Overview,
+        RecordingChannels.Channel? Channel);
+
+    /// <summary>Every recording for one user, newest first, one entry each (no grouping by show).</summary>
+    public List<DateEntry> ByDate(User user, string filter, bool includeMovies, int limit)
+    {
+        var other = Plugin.Instance?.Configuration is { RecordingsRowIncludeOther: false }
+            ? new List<string>()
+            : RecordingFiles.OtherFolders(_recordingsManager);
+        return WithPartials(Resolve())
+            .Where(r => r.Item.IsVisible(user))
+            .Where(r => includeMovies || r.Item is not Movie || RecordingFiles.IsUnder(r.Item.Path, other))
+            .Where(r => filter switch
+            {
+                FilterCurrent => !r.Archived,
+                FilterArchived => r.Archived,
+                _ => true
+            })
+            .Select(r => (Recording: r, At: r.InProgress ? r.Row.EventUtc : StartedAt(r)))
+            .OrderByDescending(x => x.Recording.InProgress)
+            .ThenByDescending(x => x.At)
+            .Take(Math.Clamp(limit, 1, 1000))
+            .Select(x => ToDateEntry(x.Recording, x.At, user))
+            .ToList();
+    }
+
+    private DateEntry ToDateEntry(Recording r, DateTime at, User user)
+    {
+        var item = r.Item;
+        var data = _userDataManager.GetUserData(user, item);
+        var percent = data is { Played: false, PlaybackPositionTicks: > 0 } && item.RunTimeTicks is > 0 and var runtime
+            ? (int)Math.Clamp(data.PlaybackPositionTicks * 100 / runtime, 1, 99)
+            : 0;
+        var warning = r.InProgress ? default : _repair.Warning(item.Path);
+        var imageId = item.HasImage(ImageType.Primary) ? item.Id
+            : item is Episode { SeriesId: var sid } && !sid.Equals(Guid.Empty) ? sid
+            : item.Id;
+        var episode = item as Episode;
+        return new DateEntry(
+            item.Id,
+            item is Episode ? "Episode" : item is Movie ? "Movie" : "Video",
+            imageId,
+            episode?.SeriesName ?? item.Name,
+            episode is null || string.IsNullOrWhiteSpace(episode.Name) ? null : episode.Name,
+            episode?.ParentIndexNumber,
+            episode?.IndexNumber,
+            item.ProductionYear,
+            at,
+            Minutes(item),
+            data?.Played == true,
+            percent,
+            r.Archived,
+            r.InProgress,
+            r.Partial,
+            warning.Short,
+            warning.Text,
+            item.Overview,
+            _channels.For(item.Path));
+    }
+
     /// <summary>One recording on a show's page.</summary>
     public sealed record EpisodeCard(
         Guid Id,
@@ -183,7 +271,9 @@ public sealed class RecordingsList
         DateTime RecordedUtc,
         bool Partial = false,
         int? Minutes = null,
-        bool Recording = false);
+        bool Recording = false,
+        string? StallText = null,
+        string? StallTitle = null);
 
     private static int? Minutes(Video item) =>
         item.RunTimeTicks is > 0 and var t ? (int)Math.Max(1, Math.Round(TimeSpan.FromTicks(t).TotalMinutes)) : null;
@@ -336,7 +426,9 @@ public sealed class RecordingsList
                     RecordedAt(r),
                     r.Partial,
                     r.Partial ? Minutes(r.Item) : null,
-                    r.InProgress);
+                    r.InProgress,
+                    r.InProgress ? null : _repair.Warning(e.Path).Short,
+                    r.InProgress ? null : _repair.Warning(e.Path).Text);
             })
             .OrderByDescending(c => c.RecordedUtc)
             .ThenByDescending(c => c.Season ?? 0)
@@ -438,6 +530,14 @@ public sealed class RecordingsList
         return r.Row.EventUtc;
     }
 
+    // When a finished recording started, as the by-date list shows it (like a DVR's list): the
+    // file's last write less its length.
+    private static DateTime StartedAt(Recording r)
+    {
+        var at = RecordedAt(r);
+        return r.Item.RunTimeTicks is > 0 and var ticks ? at - TimeSpan.FromTicks(ticks) : at;
+    }
+
     private Card ToCard(List<Recording> group, User user, IReadOnlyList<string> otherFolders)
     {
         var newest = group[0];
@@ -446,6 +546,9 @@ public sealed class RecordingsList
         int partial = group.Count(r => r.Partial);
         int? partialMinutes = group.Count == 1 && newest.Partial ? Minutes(newest.Item) : null;
         int recording = group.Count(r => r.InProgress);
+        var stalls = group.Where(r => !r.InProgress).Select(r => _repair.Warning(r.Item.Path)).Where(w => w.Short is not null).ToList();
+        var stallText = stalls.Count == 0 ? null : group.Count == 1 ? stalls[0].Short : stalls.Count + " incomplete";
+        var stallTitle = stalls.Count == 0 ? null : group.Count == 1 ? stalls[0].Text : stalls.Count + " of these recordings are missing part of the programme.";
 
         if (newest.Item is Episode episode)
         {
@@ -456,10 +559,10 @@ public sealed class RecordingsList
             var showName = episode.SeriesName ?? episode.Name;
             if (group.Count > 1)
             {
-                return new Card("Series", seriesId, imageId, showName, $"{group.Count} recordings", group.Count, unplayed, archived, newest.Row.EventUtc, partial, null, recording);
+                return new Card("Series", seriesId, imageId, showName, $"{group.Count} recordings", group.Count, unplayed, archived, newest.Row.EventUtc, partial, null, recording, stalls.Count, stallText, stallTitle);
             }
 
-            return new Card("Episode", episode.Id, imageId, showName, EpisodeLine(episode), 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes, recording);
+            return new Card("Episode", episode.Id, imageId, showName, EpisodeLine(episode), 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes, recording, stalls.Count, stallText, stallTitle);
         }
 
         var item = newest.Item;
@@ -467,7 +570,7 @@ public sealed class RecordingsList
         var subtitle = RecordingFiles.IsUnder(item.Path, otherFolders)
             ? RecordedAt(newest).ToLocalTime().ToString("MMM d, h:mm tt", System.Globalization.CultureInfo.InvariantCulture)
             : item is Movie ? item.ProductionYear?.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
-        return new Card(item is Movie ? "Movie" : "Video", item.Id, item.Id, item.Name, subtitle, 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes, recording);
+        return new Card(item is Movie ? "Movie" : "Video", item.Id, item.Id, item.Name, subtitle, 1, unplayed, archived, newest.Row.EventUtc, partial, partialMinutes, recording, stalls.Count, stallText, stallTitle);
     }
 
     private static string? EpisodeLine(Episode episode)

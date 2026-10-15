@@ -17,6 +17,10 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<HistoryStore>();
         serviceCollection.AddSingleton<LibraryImporter>();
         serviceCollection.AddSingleton<BackupService>();
+        serviceCollection.AddSingleton<StallNotes>();
+        serviceCollection.AddSingleton<Programmes>();
+        serviceCollection.AddSingleton<RecordingRepair>();
+        serviceCollection.AddSingleton<RecordingChannels>();
         serviceCollection.AddSingleton<RecordingsList>();
         serviceCollection.AddSingleton<ScheduleOutcomes>();
         serviceCollection.AddSingleton<GuideSweeper>();

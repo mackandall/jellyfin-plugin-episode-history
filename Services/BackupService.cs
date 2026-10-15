@@ -138,7 +138,7 @@ public sealed class BackupService
 
             var itemId = row.ItemId;
             if (_libraryManager.GetItemById(itemId) is null && !string.IsNullOrEmpty(row.ItemPath)
-                && _libraryManager.FindByPath(row.ItemPath, false) is { } found)
+                && RecordingFiles.ItemAt(_libraryManager, row.ItemPath) is { } found)
             {
                 itemId = found.Id;
                 relinked++;

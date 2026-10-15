@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 
 namespace Jellyfin.Plugin.EpisodeHistory.Services;
@@ -31,6 +33,22 @@ internal static class RecordingFiles
             .SelectMany(f => f.Locations)
             .Select(p => Path.TrimEndingDirectorySeparator(p) + Path.DirectorySeparatorChar)
             .ToList();
+
+    /// <summary>
+    /// The library item for a recording file. FindByPath leaves out alternate versions, and
+    /// that is what Jellyfin makes of a recording resumed after a restart or retry ("Name - 1.ts"
+    /// next to "Name.ts"), so those are looked for too.
+    /// </summary>
+    public static BaseItem? ItemAt(ILibraryManager libraryManager, string path) =>
+        libraryManager.FindByPath(path, false)
+        ?? libraryManager.GetItemList(new InternalItemsQuery
+        {
+            Path = path,
+            IsFolder = false,
+            IncludeOwnedItems = true,
+            Limit = 1,
+            DtoOptions = new DtoOptions(true)
+        }).FirstOrDefault();
 
     public static bool IsUnder(string? path, IReadOnlyList<string> folders) =>
         !string.IsNullOrEmpty(path) && folders.Any(f => path.StartsWith(f, StringComparison.Ordinal));

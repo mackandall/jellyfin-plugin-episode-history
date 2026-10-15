@@ -84,6 +84,16 @@
                         </div>
                     </div>
 
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="StallWarnSeconds">Seconds without data before a recording is marked Stalled</label>
+                        <input id="StallWarnSeconds" type="number" min="0" max="3600" is="emby-input" />
+                        <div class="fieldDescription">
+                            A tuner can go quiet in the middle of a recording while Jellyfin keeps it open to the end. Time
+                            without data never counts towards "recorded"; a recording that lost at least this much is marked
+                            Stalled in the recordings lists, where it can be kept as it is or recorded again. 0: no warnings.
+                        </div>
+                    </div>
+
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
                             <input id="TidyDeletedRecordings" type="checkbox" is="emby-checkbox" />
@@ -116,6 +126,69 @@
                         <label class="inputLabel inputLabelUnfocused" for="MinRecordingMinutes">Minimum length for imported or hand-added recordings (minutes)</label>
                         <input id="MinRecordingMinutes" type="number" min="0" is="emby-input" />
                         <div class="fieldDescription">Files in the recordings folders that weren't seen being recorded (import, or copied in by hand) must be at least this long to count, so stubs of stopped recordings are ignored. With "count all libraries", library items known to be shorter than this don't count as in library either.</div>
+                    </div>
+                </div>
+
+                <div class="verticalSection">
+                    <h2>Split and incomplete recordings</h2>
+                    <div class="fieldDescription" style="margin-bottom:1em;">
+                        A recording interrupted by a server restart, or tuned again after a stall, goes on in a second
+                        file. One that failed part-way or lost too much is missing part of the programme.
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="JoinSplitRecordings" type="checkbox" is="emby-checkbox" />
+                            <span>Join the pieces of an interrupted recording into one file</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Once the programme is over. Nothing is re-encoded, and the joined file is checked against the
+                            pieces before it takes their place. Pieces from before can be joined from a recording's menu.
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="JoinKeepPiecesDays">Days to keep the original pieces after joining</label>
+                        <input id="JoinKeepPiecesDays" type="number" min="0" max="60" is="emby-input" />
+                        <div class="fieldDescription">Hidden beside the joined file, then deleted. 0: deleted at once.</div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="AutoRerecord" type="checkbox" is="emby-checkbox" />
+                            <span>Record an incomplete recording again at the next airing</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            The guide is searched for another airing of the same episode or movie, and it is scheduled.
+                            Not for a recording stopped on purpose, a live TV buffer, or a programme the guide can't tell
+                            from its other episodes. "Keep it" in a recording's menu calls it off.
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RerecordBelowPercent">A recording is incomplete below this share of the programme (%)</label>
+                        <input id="RerecordBelowPercent" type="number" min="50" max="100" is="emby-input" />
+                        <div class="fieldDescription">The pieces of an interrupted recording count together.</div>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="RerecordChannelScope">Where to look for another airing</label>
+                        <select id="RerecordChannelScope" is="emby-select">
+                            <option value="any">Any channel</option>
+                            <option value="same">The same channel only</option>
+                        </select>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="RerecordReplace">When the full copy is in</label>
+                        <select id="RerecordReplace" is="emby-select">
+                            <option value="delete">Delete the incomplete recording</option>
+                            <option value="keep">Keep every version</option>
+                        </select>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RerecordMaxAttempts">Most airings recorded to replace one recording</label>
+                        <input id="RerecordMaxAttempts" type="number" min="1" max="10" is="emby-input" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RerecordGiveUpDays">Days to go on looking for another airing</label>
+                        <input id="RerecordGiveUpDays" type="number" min="1" max="365" is="emby-input" />
                     </div>
                 </div>
 
@@ -236,6 +309,24 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="RecordingsTabLimit">Most cards on the Recordings tab</label>
                         <input id="RecordingsTabLimit" type="number" min="1" max="200" is="emby-input" />
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="RecordingsTabView">Recordings tab opens as</label>
+                        <select id="RecordingsTabView" is="emby-select">
+                            <option value="cards">Cards</option>
+                            <option value="date">A list by date</option>
+                        </select>
+                        <div class="fieldDescription">The list by date has one line per recording, newest first, grouped by day, with the channel it came from. Viewers can switch between the two on the tab; their choice is remembered in that browser.</div>
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="RecordingsDateLogo">Channel logo in the list by date</label>
+                        <select id="RecordingsDateLogo" is="emby-select">
+                            <option value="left">At the start of each line</option>
+                            <option value="right">At the end of each line</option>
+                        </select>
+                        <div class="fieldDescription">The channel's logo and number, from Live TV. Recordings made before this version, or not by the DVR, show without one.</div>
                     </div>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
@@ -407,6 +498,15 @@
                         page.querySelector("#MinRecordedPercent").value = config.MinRecordedPercent;
                         page.querySelector("#CountAllLibraries").checked = config.CountAllLibraries;
                         page.querySelector("#TidyDeletedRecordings").checked = config.TidyDeletedRecordings !== false;
+                        page.querySelector("#StallWarnSeconds").value = config.StallWarnSeconds ?? 60;
+                        page.querySelector("#JoinSplitRecordings").checked = config.JoinSplitRecordings !== false;
+                        page.querySelector("#JoinKeepPiecesDays").value = config.JoinKeepPiecesDays ?? 3;
+                        page.querySelector("#AutoRerecord").checked = config.AutoRerecord !== false;
+                        page.querySelector("#RerecordBelowPercent").value = config.RerecordBelowPercent ?? 97;
+                        page.querySelector("#RerecordChannelScope").value = config.RerecordChannelScope || "any";
+                        page.querySelector("#RerecordReplace").value = config.RerecordReplace || "delete";
+                        page.querySelector("#RerecordMaxAttempts").value = config.RerecordMaxAttempts ?? 2;
+                        page.querySelector("#RerecordGiveUpDays").value = config.RerecordGiveUpDays ?? 30;
                         page.querySelector("#MinRecordingMinutes").value = config.MinRecordingMinutes;
                         page.querySelector("#WatchedSymbol").value = config.WatchedSymbol || "";
                         page.querySelector("#InLibrarySymbol").value = config.InLibrarySymbol || "";
@@ -427,6 +527,8 @@
                         page.querySelector("#RecordingsRowLimit").value = config.RecordingsRowLimit;
                         page.querySelector("#RecordingsTabMode").value = config.RecordingsTabMode || "replace";
                         page.querySelector("#RecordingsTabLimit").value = config.RecordingsTabLimit;
+                        page.querySelector("#RecordingsTabView").value = config.RecordingsTabView || "cards";
+                        page.querySelector("#RecordingsDateLogo").value = config.RecordingsDateLogo || "left";
                         page.querySelector("#ShowPageRecordingsEnabled").checked = config.ShowPageRecordingsEnabled;
                         Dashboard.hideLoadingMsg();
                     });
@@ -532,6 +634,20 @@
                         config.MinRecordedPercent = parseInt(page.querySelector("#MinRecordedPercent").value, 10) || 0;
                         config.CountAllLibraries = page.querySelector("#CountAllLibraries").checked;
                         config.TidyDeletedRecordings = page.querySelector("#TidyDeletedRecordings").checked;
+                        var stallSeconds = parseInt(page.querySelector("#StallWarnSeconds").value, 10);
+                        config.StallWarnSeconds = isNaN(stallSeconds) ? 60 : Math.min(3600, Math.max(0, stallSeconds));
+                        var num = function (id, fallback, min, max) {
+                            var v = parseInt(page.querySelector(id).value, 10);
+                            return isNaN(v) ? fallback : Math.min(max, Math.max(min, v));
+                        };
+                        config.JoinSplitRecordings = page.querySelector("#JoinSplitRecordings").checked;
+                        config.JoinKeepPiecesDays = num("#JoinKeepPiecesDays", 3, 0, 60);
+                        config.AutoRerecord = page.querySelector("#AutoRerecord").checked;
+                        config.RerecordBelowPercent = num("#RerecordBelowPercent", 97, 50, 100);
+                        config.RerecordChannelScope = page.querySelector("#RerecordChannelScope").value;
+                        config.RerecordReplace = page.querySelector("#RerecordReplace").value;
+                        config.RerecordMaxAttempts = num("#RerecordMaxAttempts", 2, 1, 10);
+                        config.RerecordGiveUpDays = num("#RerecordGiveUpDays", 30, 1, 365);
                         config.MinRecordingMinutes = parseInt(page.querySelector("#MinRecordingMinutes").value, 10) || 0;
                         config.WatchedSymbol = page.querySelector("#WatchedSymbol").value;
                         config.InLibrarySymbol = page.querySelector("#InLibrarySymbol").value;
@@ -553,6 +669,8 @@
                         config.RecordingsRowLimit = parseInt(page.querySelector("#RecordingsRowLimit").value, 10) || 24;
                         config.RecordingsTabMode = page.querySelector("#RecordingsTabMode").value;
                         config.RecordingsTabLimit = parseInt(page.querySelector("#RecordingsTabLimit").value, 10) || 200;
+                        config.RecordingsTabView = page.querySelector("#RecordingsTabView").value;
+                        config.RecordingsDateLogo = page.querySelector("#RecordingsDateLogo").value;
                         config.ShowPageRecordingsEnabled = page.querySelector("#ShowPageRecordingsEnabled").checked;
                         ApiClient.updatePluginConfiguration(pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);

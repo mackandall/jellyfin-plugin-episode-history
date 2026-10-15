@@ -51,6 +51,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     private readonly LibraryImporter _importer;
     private readonly RecordingsList _recordings;
     private readonly ScheduleOutcomes _outcomes;
+    private readonly Programmes _programmes;
     private readonly ILogger<GuideSweeper> _logger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private readonly HashSet<string> _disarmed = new(StringComparer.Ordinal);
@@ -68,8 +69,10 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         LibraryImporter importer,
         RecordingsList recordings,
         ScheduleOutcomes outcomes,
+        Programmes programmes,
         ILogger<GuideSweeper> logger)
     {
+        _programmes = programmes;
         _outcomes = outcomes;
         _recordings = recordings;
         _libraryManager = libraryManager;
@@ -298,6 +301,11 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         var cancelledIds = new HashSet<string>(StringComparer.Ordinal);
         if (cfg.EnableDuplicateSkipping)
         {
+            // Episodes waiting to be recorded again in full: their copy in the library (or the
+            // watched mark) is the incomplete one, so a series timer on a re-airing is wanted.
+            var rerecords = _programmes.All()
+                .Where(p => p.State is Programmes.Waiting or Programmes.Scheduled)
+                .ToList();
             foreach (var timer in timers)
             {
                 if (timer.Status != RecordingStatus.New || string.IsNullOrEmpty(timer.SeriesTimerId)
@@ -311,7 +319,14 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                     continue;
                 }
 
-                var state = index.Evaluate(EpisodeIdentity.FromProgram(program, marker));
+                var identity = EpisodeIdentity.FromProgram(program, marker);
+                if (rerecords.Any(p => string.Equals(p.NextProgramId, timer.ProgramId, StringComparison.OrdinalIgnoreCase)
+                    || (p.Identity is { } waiting && waiting.SameEpisode(identity))))
+                {
+                    continue;
+                }
+
+                var state = index.Evaluate(identity);
                 var skipReason = state.InLibrary ? "episode already in library"
                     : cfg.SkipWatchedEpisodes && state.Watched ? "episode already watched"
                     : null;
