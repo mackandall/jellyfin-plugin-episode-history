@@ -70,6 +70,20 @@ public sealed class RecordingChannels
         }
     }
 
+    /// <summary>A Live TV channel by the tuner's id ("hdhr_232"), or null.</summary>
+    public Channel? ByExternalId(string? externalId)
+    {
+        if (string.IsNullOrEmpty(externalId))
+        {
+            return null;
+        }
+
+        lock (_lock)
+        {
+            return Channels().GetValueOrDefault(externalId);
+        }
+    }
+
     // New timers and airings since the last look; cheap when nothing changed.
     private void Harvest()
     {

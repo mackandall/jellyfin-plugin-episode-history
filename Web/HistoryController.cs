@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -41,6 +42,8 @@ public sealed class HistoryController : ControllerBase
     private readonly IAuthorizationService _authorization;
     private readonly StallNotes _stalls;
     private readonly RecordingRepair _repair;
+    private readonly ScheduleLedger _ledger;
+    private readonly Programmes _programmes;
     private readonly ILogger<HistoryController> _logger;
 
     public HistoryController(
@@ -58,8 +61,12 @@ public sealed class HistoryController : ControllerBase
         IAuthorizationService authorization,
         StallNotes stalls,
         RecordingRepair repair,
+        ScheduleLedger ledger,
+        Programmes programmes,
         ILogger<HistoryController> logger)
     {
+        _ledger = ledger;
+        _programmes = programmes;
         _stalls = stalls;
         _repair = repair;
         _logger = logger;
@@ -531,6 +538,54 @@ public sealed class HistoryController : ControllerBase
     /// "Keep it as it is": a partial recording counts as recorded from now on (guide marks,
     /// series recordings skip it), and a stalled one loses its warning.
     /// </summary>
+    /// <summary>
+    /// Recordings that produced nothing at all (the last 30 days, newest first), with where each
+    /// stands with being recorded again. See <see cref="ScheduleLedger"/>.
+    /// </summary>
+    [HttpGet("Failed")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public IActionResult Failed()
+    {
+        var programmes = _programmes.All();
+        return Ok(_ledger.Failures().Select(e =>
+        {
+            // Its own airing on the waiting list, else the incomplete one it was a try at replacing.
+            var p = programmes.FirstOrDefault(q => q.Key == e.Key)
+                ?? programmes.Where(q => q.Identity is { } x && e.Identity is { } y && x.SameEpisode(y) && q.CreatedUtc <= (e.DecidedUtc ?? DateTime.UtcNow))
+                    .OrderByDescending(q => q.CreatedUtc).FirstOrDefault();
+            var next = p?.State switch
+            {
+                Programmes.Waiting => "Waiting for another airing",
+                Programmes.Scheduled when p.NextStartUtc is { } start => "Records again " + start.ToLocalTime().ToString("ddd MMM d, h:mm tt", CultureInfo.InvariantCulture)
+                    + (p.NextChannel is null ? string.Empty : " (" + p.NextChannel + ")"),
+                Programmes.Replaced or Programmes.Complete => "Recorded since",
+                Programmes.GaveUp => "No other airing was recorded",
+                Programmes.Kept => "Not recorded again",
+                _ => "Not recorded again"
+            };
+            return new
+            {
+                e.TimerId,
+                e.Key,
+                e.Title,
+                Channel = e.ChannelName is null ? null : (e.ChannelNumber is null ? string.Empty : e.ChannelNumber + " ") + e.ChannelName,
+                e.StartUtc,
+                e.Reason,
+                Next = next,
+                CanKeep = p is not null && p.Key == e.Key && p.State is Programmes.Waiting or Programmes.Scheduled
+            };
+        }));
+    }
+
+    /// <summary>"Don't record it again" for an airing on the failed list.</summary>
+    [HttpPost("Failed/Keep")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public async Task<IActionResult> KeepFailed([FromQuery] string key, CancellationToken cancellationToken)
+    {
+        await _repair.KeepAiringAsync(key, cancellationToken).ConfigureAwait(false);
+        return Ok(new { Kept = true });
+    }
+
     [HttpPost("Item/{itemId}/KeepRecording")]
     [Authorize(Policy = Policies.RequiresElevation)]
     public async Task<IActionResult> KeepRecording([FromRoute] Guid itemId, CancellationToken cancellationToken)

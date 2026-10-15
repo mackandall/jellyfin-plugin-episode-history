@@ -6,14 +6,20 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data;
 using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.EpisodeHistory.Configuration;
 using Jellyfin.Plugin.EpisodeHistory.History;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Controller.Session;
+using MediaBrowser.Model.Activity;
 using MediaBrowser.Model.LiveTv;
+using MediaBrowser.Model.Session;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -499,6 +505,142 @@ public sealed class RecordingRepair
         }
     }
 
+    // ---- recordings that produced nothing (see ScheduleLedger) --------------------------------
+
+    /// <summary>
+    /// Airings the ledger found produced no recording at all: each goes on the list to be
+    /// recorded at the next airing (or, when it was itself the airing set to replace an
+    /// incomplete recording, that one goes on looking), and the admins are told.
+    /// </summary>
+    public async Task NoteFailedAsync(IReadOnlyList<ScheduleLedger.Entry> failed, CancellationToken ct)
+    {
+        if (failed.Count == 0)
+        {
+            return;
+        }
+
+        var cfg = Config;
+        var max = Math.Clamp(cfg.RerecordMaxAttempts, 1, 10);
+        var now = DateTime.UtcNow;
+        var lines = new List<string>();
+        foreach (var e in failed)
+        {
+            string next;
+            var chains = _programmes.All()
+                .Where(q => q.State is Programmes.Waiting or Programmes.Scheduled && q.Identity is { } x && e.Identity is { } y && x.SameEpisode(y))
+                .ToList();
+            if (chains.Count > 0)
+            {
+                // The recording set to replace an incomplete one failed: that one goes on looking.
+                var gaveUp = false;
+                _programmes.Change(all =>
+                {
+                    foreach (var q in chains.Select(c => all.GetValueOrDefault(c.Key)).OfType<Programmes.Programme>())
+                    {
+                        q.State = q.Attempts >= max ? Programmes.GaveUp : Programmes.Waiting;
+                        gaveUp |= q.State == Programmes.GaveUp;
+                        q.NextProgramId = null;
+                        q.NextStartUtc = null;
+                        q.NextChannel = null;
+                    }
+                });
+                next = gaveUp ? "It was a second try at an incomplete recording; no more tries are left." : "Another airing will be looked for.";
+            }
+            else if (!cfg.AutoRerecord)
+            {
+                next = "Recording again is turned off.";
+            }
+            else if (!Reliable(e.Identity))
+            {
+                next = "The guide can't tell this episode from the others, so it isn't recorded again by itself.";
+            }
+            else
+            {
+                _programmes.Change(all => all.TryAdd(e.Key, new Programmes.Programme
+                {
+                    Key = e.Key,
+                    Title = e.Title,
+                    Identity = e.Identity,
+                    ChannelId = e.ChannelId,
+                    ProgramStartUtc = e.StartUtc,
+                    ProgramEndUtc = e.EndUtc,
+                    CreatedUtc = now,
+                    State = Programmes.Waiting,
+                    FlaggedUtc = now
+                }));
+                next = "It will be recorded at the next airing found in the guide.";
+            }
+
+            if (next.StartsWith("It will", StringComparison.Ordinal) || next.StartsWith("Another", StringComparison.Ordinal))
+            {
+                _lastSearch = DateTime.MinValue; // look in the guide at once
+            }
+
+            lines.Add(string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} ({1}{2:ddd h:mm tt}) didn't record. {3} {4}",
+                e.Title,
+                e.ChannelName is null ? string.Empty : (e.ChannelNumber is null ? string.Empty : e.ChannelNumber + " ") + e.ChannelName + ", ",
+                e.StartUtc.ToLocalTime(),
+                e.Reason,
+                next));
+        }
+
+        var text = string.Join("\n", lines);
+        _logger.LogWarning("Recordings that didn't record: {Text}", text);
+        await LogActivityAsync(failed.Count == 1 ? "Recording failed: " + failed[0].Title : failed.Count + " recordings failed", text).ConfigureAwait(false);
+        if (cfg.FailedRecordingOnScreen)
+        {
+            await TellAdminsAsync(text, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task LogActivityAsync(string name, string overview)
+    {
+        try
+        {
+            await _serviceProvider.GetRequiredService<IActivityManager>().CreateAsync(new ActivityLog(name, "EpisodeHistoryRecordingFailed", Guid.Empty)
+            {
+                Overview = overview,
+                ShortOverview = "Episode History",
+                LogSeverity = LogLevel.Warning
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not add the activity log entry");
+        }
+    }
+
+    private async Task TellAdminsAsync(string text, CancellationToken ct)
+    {
+        var sessions = _serviceProvider.GetRequiredService<ISessionManager>();
+        var users = _serviceProvider.GetRequiredService<IUserManager>();
+        var cutoff = DateTime.UtcNow.AddMinutes(-15);
+        foreach (var s in sessions.Sessions
+            .Where(s => s.IsActive && s.LastActivityDate > cutoff && !s.UserId.Equals(Guid.Empty))
+            .Where(s => users.GetUserById(s.UserId)?.HasPermission(PermissionKind.IsAdministrator) == true)
+            .ToList())
+        {
+            try
+            {
+                await sessions.SendMessageCommand(
+                    null!,
+                    s.Id,
+                    new MessageCommand { Header = "Recording failed", Text = text, TimeoutMs = 60000 },
+                    ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Could not show the alert on {Device}", s.DeviceName);
+            }
+        }
+    }
+
+    /// <summary>"Don't record it again" for an airing on the failed list (by its key).</summary>
+    public Task KeepAiringAsync(string key, CancellationToken ct) =>
+        _programmes.All().FirstOrDefault(p => p.Key == key) is { } p ? KeepAsync(p, ct) : Task.CompletedTask;
+
     /// <summary>Schedules a one-off recording of a guide entry (library id), with the usual padding.</summary>
     public async Task ScheduleAsync(string programId, CancellationToken ct)
     {
@@ -525,13 +667,11 @@ public sealed class RecordingRepair
     /// "Keep it as it is": the airing a file belongs to is no longer recorded again; a recording
     /// this plugin set for that is taken off the schedule.
     /// </summary>
-    public async Task KeepAsync(string? path, CancellationToken ct)
-    {
-        if (_programmes.ForFile(path) is not { } p)
-        {
-            return;
-        }
+    public Task KeepAsync(string? path, CancellationToken ct) =>
+        _programmes.ForFile(path) is { } p ? KeepAsync(p, ct) : Task.CompletedTask;
 
+    private async Task KeepAsync(Programmes.Programme p, CancellationToken ct)
+    {
         if (p.State == Programmes.Scheduled && p.NextIsOurs && p.NextProgramId is { } programId)
         {
             var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items;

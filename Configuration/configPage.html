@@ -190,6 +190,27 @@
                         <label class="inputLabel inputLabelUnfocused" for="RerecordGiveUpDays">Days to go on looking for another airing</label>
                         <input id="RerecordGiveUpDays" type="number" min="1" max="365" is="emby-input" />
                     </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="WatchFailedRecordings" type="checkbox" is="emby-checkbox" />
+                            <span>Notice recordings that didn't record at all</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            A recording whose tuner failed every try, never answered, or that was due while the server
+                            was off leaves no file. Each one is listed below and in the activity log, and (with the setting
+                            above) recorded at the next airing. A recording someone cancelled, or JellyDVR Schedule
+                            skipped, doesn't count.
+                        </div>
+                    </div>
+                    <div class="checkboxContainer">
+                        <label>
+                            <input id="FailedRecordingOnScreen" type="checkbox" is="emby-checkbox" />
+                            <span>Also show it on administrators' screens</span>
+                        </label>
+                    </div>
+                    <h3 style="margin-bottom:0.3em;">Didn't record (last 30 days)</h3>
+                    <div id="FailedRecordings" class="fieldDescription">Loading…</div>
                 </div>
 
                 <div class="verticalSection">
@@ -469,6 +490,7 @@
                     document.querySelector("#Status").textContent = "Status unavailable.";
                 });
 
+                showFailed();
                 get("EpisodeHistory/Recent?limit=25").then(function (r) {
                     var lines = (r.History || []).map(function (h) {
                         var id = h.Identity || {};
@@ -485,6 +507,42 @@
                     });
                     document.querySelector("#Recent").textContent = lines.length ? lines.join("\n") : "Nothing yet.";
                 });
+            }
+
+            // Recordings that produced nothing, with where each stands; "Don't record it again" per line.
+            function showFailed() {
+                var box = document.querySelector("#FailedRecordings");
+                get("EpisodeHistory/Failed").then(function (list) {
+                    box.innerHTML = "";
+                    if (!list.length) {
+                        box.textContent = "None.";
+                        return;
+                    }
+                    list.forEach(function (f) {
+                        var row = document.createElement("div");
+                        row.style.margin = "0.6em 0";
+                        var head = document.createElement("div");
+                        head.style.fontWeight = "600";
+                        head.textContent = f.Title + " · " + when(f.StartUtc) + (f.Channel ? " · " + f.Channel : "");
+                        var body = document.createElement("div");
+                        body.textContent = (f.Reason || "") + " " + f.Next + ".";
+                        row.appendChild(head);
+                        row.appendChild(body);
+                        if (f.CanKeep) {
+                            var b = document.createElement("button");
+                            b.type = "button";
+                            b.setAttribute("is", "emby-button");
+                            b.className = "raised";
+                            b.style.marginTop = "0.3em";
+                            b.textContent = "Don't record it again";
+                            b.addEventListener("click", function () {
+                                post("EpisodeHistory/Failed/Keep?key=" + encodeURIComponent(f.Key)).then(showFailed);
+                            });
+                            row.appendChild(b);
+                        }
+                        box.appendChild(row);
+                    });
+                }, function () { box.textContent = "Couldn't load the list."; });
             }
 
             document.querySelector("#EpisodeHistoryConfigPage")
@@ -507,6 +565,8 @@
                         page.querySelector("#RerecordReplace").value = config.RerecordReplace || "delete";
                         page.querySelector("#RerecordMaxAttempts").value = config.RerecordMaxAttempts ?? 2;
                         page.querySelector("#RerecordGiveUpDays").value = config.RerecordGiveUpDays ?? 30;
+                        page.querySelector("#WatchFailedRecordings").checked = config.WatchFailedRecordings !== false;
+                        page.querySelector("#FailedRecordingOnScreen").checked = config.FailedRecordingOnScreen !== false;
                         page.querySelector("#MinRecordingMinutes").value = config.MinRecordingMinutes;
                         page.querySelector("#WatchedSymbol").value = config.WatchedSymbol || "";
                         page.querySelector("#InLibrarySymbol").value = config.InLibrarySymbol || "";
@@ -648,6 +708,8 @@
                         config.RerecordReplace = page.querySelector("#RerecordReplace").value;
                         config.RerecordMaxAttempts = num("#RerecordMaxAttempts", 2, 1, 10);
                         config.RerecordGiveUpDays = num("#RerecordGiveUpDays", 30, 1, 365);
+                        config.WatchFailedRecordings = page.querySelector("#WatchFailedRecordings").checked;
+                        config.FailedRecordingOnScreen = page.querySelector("#FailedRecordingOnScreen").checked;
                         config.MinRecordingMinutes = parseInt(page.querySelector("#MinRecordingMinutes").value, 10) || 0;
                         config.WatchedSymbol = page.querySelector("#WatchedSymbol").value;
                         config.InLibrarySymbol = page.querySelector("#InLibrarySymbol").value;

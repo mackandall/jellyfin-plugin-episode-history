@@ -96,6 +96,16 @@ public class PluginConfiguration : BasePluginConfiguration
     public int RerecordGiveUpDays { get; set; } = 30;
 
     /// <summary>
+    /// Keep a ledger of what was due to record and notice a recording that produced nothing at
+    /// all (the tuner failed every try, never answered, or the server was off): it is listed,
+    /// logged in the activity log and, with <see cref="AutoRerecord"/>, recorded at the next airing.
+    /// </summary>
+    public bool WatchFailedRecordings { get; set; } = true;
+
+    /// <summary>Also show a failed recording on the screens of signed-in administrators.</summary>
+    public bool FailedRecordingOnScreen { get; set; } = true;
+
+    /// <summary>
     /// When a recording is deleted (from any app), also delete the files beside it (.nfo,
     /// thumbnail, .edl) and its season and show folders once no recording is left in them.
     /// </summary>

@@ -81,6 +81,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
     private readonly StallNotes _stalls;
     private readonly Programmes _programmes;
     private readonly RecordingRepair _repair;
+    private readonly ScheduleLedger _ledger;
     private Timer? _poll;
     private int _polling;
 
@@ -95,8 +96,10 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         StallNotes stalls,
         Programmes programmes,
         RecordingRepair repair,
+        ScheduleLedger ledger,
         ILogger<HistoryEvents> logger)
     {
+        _ledger = ledger;
         _stalls = stalls;
         _programmes = programmes;
         _repair = repair;
@@ -340,6 +343,22 @@ public sealed class HistoryEvents : IHostedService, IDisposable
             }
 
             ProcessAdded();
+
+            if (Config.WatchFailedRecordings)
+            {
+                try
+                {
+                    // Recordings that produced nothing at all: no file, so nothing above sees them.
+                    var failed = _ledger.Process(
+                        key => _pending.Values.Any(x => x.Key == key) || _programmes.All().Any(p => p.Key == key && p.Pieces.Count > 0),
+                        new GuideMarker(Config));
+                    await _repair.NoteFailedAsync(failed, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to check the schedule for recordings that didn't record");
+                }
+            }
 
             try
             {
@@ -619,6 +638,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
         if (e.Argument?.Id is { Length: > 0 } id)
         {
             _cancelledTimers[id] = now;
+            _ledger.NoteCancelled(id);
         }
     }
 
