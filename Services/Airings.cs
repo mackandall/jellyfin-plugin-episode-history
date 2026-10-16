@@ -148,26 +148,55 @@ public sealed class Airings
     private static Source? SourceOf(IReadOnlyList<Source> sources, string? externalId) =>
         externalId is null ? null : sources.FirstOrDefault(s => externalId.StartsWith(s.Prefix, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// How far the guide reaches: its last entry's end, and for a series the first and last of its
+    /// episodes the guide lists (by season and episode), so "not in the guide" can say what is.
+    /// </summary>
+    public sealed record Reach(DateTime? UntilUtc, int Showings, GuideEpisode? First, GuideEpisode? Last);
+
+    /// <summary>One guide episode of a series.</summary>
+    public sealed record GuideEpisode(int? Season, int? Number, string? Title, DateTime StartUtc);
+
     /// <summary>The airings of <paramref name="identity"/> not over yet, soonest first.</summary>
-    public async Task<List<Airing>> FindAsync(EpisodeIdentity identity, CancellationToken ct)
+    public async Task<List<Airing>> FindAsync(EpisodeIdentity identity, CancellationToken ct) =>
+        (await FindWithReachAsync(identity, ct).ConfigureAwait(false)).Airings;
+
+    /// <summary>As <see cref="FindAsync"/>, with how far the guide reaches for it.</summary>
+    public async Task<(List<Airing> Airings, Reach Reach)> FindWithReachAsync(EpisodeIdentity identity, CancellationToken ct)
     {
         var marker = new GuideMarker(Config);
         var now = DateTime.UtcNow;
         var names = Names(identity);
-        var programs = _libraryManager.GetItemList(new InternalItemsQuery
+        var upcoming = _libraryManager.GetItemList(new InternalItemsQuery
             {
                 IncludeItemTypes = new[] { BaseItemKind.LiveTvProgram },
                 MinEndDate = now
             })
             .OfType<LiveTvProgram>()
+            .ToList();
+        var shows = upcoming
             .Where(p => (identity.ValidProgramId is { } id && string.Equals(p.ShowId, id, StringComparison.Ordinal))
                 || names.Contains(EpisodeIdentity.Normalize(marker.Strip(p.Name) ?? p.Name)))
+            .ToList();
+        var programs = shows
             .Where(p => Same(identity, EpisodeIdentity.FromProgram(p, marker)))
             .OrderBy(p => p.StartDate)
             .ToList();
+
+        // A series' episodes in the guide (not for a movie: its title may match unrelated showings).
+        var episodes = identity.IsMovie
+            ? new List<LiveTvProgram>()
+            : shows.Where(p => p.IndexNumber is > 0 || !string.IsNullOrWhiteSpace(p.EpisodeTitle)).ToList();
+        GuideEpisode? EpisodeOf(LiveTvProgram? p) => p is null ? null : new GuideEpisode(p.ParentIndexNumber, p.IndexNumber, marker.Strip(p.EpisodeTitle), p.StartDate);
+        var numbered = episodes.Where(p => p.IndexNumber is > 0).OrderBy(p => p.ParentIndexNumber ?? 0).ThenBy(p => p.IndexNumber).ToList();
+        var reach = new Reach(
+            upcoming.Select(p => p.EndDate).Where(d => d.HasValue).Max(),
+            identity.IsMovie ? shows.Count(p => Same(identity, EpisodeIdentity.FromProgram(p, marker))) : episodes.Count,
+            EpisodeOf(numbered.FirstOrDefault() ?? episodes.MinBy(p => p.StartDate)),
+            EpisodeOf(numbered.LastOrDefault() ?? episodes.MaxBy(p => p.StartDate)));
         if (programs.Count == 0)
         {
-            return new List<Airing>();
+            return (new List<Airing>(), reach);
         }
 
         var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items
@@ -226,7 +255,7 @@ public sealed class Airings
                 others.Select(t => t.Name).Where(n => !string.IsNullOrEmpty(n)).Distinct().Take(3).ToList()));
         }
 
-        return result;
+        return (result, reach);
     }
 
     /// <summary>

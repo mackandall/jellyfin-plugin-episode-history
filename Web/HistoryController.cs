@@ -1128,11 +1128,16 @@ public sealed class HistoryController : ControllerBase
             return NotFound();
         }
 
-        var airings = await _airings.FindAsync(identity, cancellationToken).ConfigureAwait(false);
+        var (airings, reach) = await _airings.FindWithReachAsync(identity, cancellationToken).ConfigureAwait(false);
         return Ok(new
         {
             Title = title,
             identity.IsMovie,
+            // How far the guide reaches, and the series' first and last episodes in it.
+            GuideUntil = reach.UntilUtc,
+            GuideShowings = reach.Showings,
+            GuideFirst = reach.First is { } f ? new { f.Season, Episode = f.Number, f.Title, Start = f.StartUtc } : null,
+            GuideLast = reach.Last is { } l ? new { l.Season, Episode = l.Number, l.Title, Start = l.StartUtc } : null,
             Tuners = airings.Select(a => a.Tuners).DefaultIfEmpty(0).Max(),
             Airings = airings.Select(a => new
             {
