@@ -144,6 +144,18 @@ public sealed class Programmes
         /// <summary>That recording was scheduled by this plugin (not one that was already set).</summary>
         public bool NextIsOurs { get; set; }
 
+        /// <summary>Someone asked for it to be recorded again ("Re-record…"), not the completeness check.</summary>
+        public bool Manual { get; set; }
+
+        /// <summary>What was wrong with it, as given with the request.</summary>
+        public string? Reason { get; set; }
+
+        /// <summary>The library item it was asked for on (its file may have moved to an archive since).</summary>
+        public Guid? ItemId { get; set; }
+
+        /// <summary>Its files once a new recording replaced them: renamed out of the library, deleted after the keep days.</summary>
+        public List<ReplacedFile> ReplacedFiles { get; set; } = new();
+
         public double ScheduledSeconds => Math.Max(0, (ProgramEndUtc - ProgramStartUtc).TotalSeconds);
 
         public double CapturedSeconds => Pieces.Sum(p => p.CapturedSeconds);
@@ -163,6 +175,19 @@ public sealed class Programmes
                 : Pieces.OrderBy(p => p.FirstSeenUtc).Select(p => p.Path).Where(File.Exists).ToList();
     }
 
+    /// <summary>A replaced recording's file, kept under <see cref="RenamedPath"/> until it is deleted.</summary>
+    public sealed class ReplacedFile
+    {
+        public string Path { get; set; } = string.Empty;
+
+        public DateTime ReplacedUtc { get; set; }
+
+        /// <summary>Gone for good (deleted after the keep days).</summary>
+        public bool Deleted { get; set; }
+
+        public string RenamedPath => Path + ".replaced";
+    }
+
     /// <summary>The airing a timer records: its guide entry on its channel (its end time when it has none).</summary>
     public static string KeyFor(string? channelId, string? programId, DateTime endUtc) =>
         (channelId ?? "?") + "|" + (string.IsNullOrEmpty(programId) ? "end" + endUtc.Ticks : programId);
@@ -174,7 +199,11 @@ public sealed class Programmes
         {
             var all = Load();
             change(all);
-            foreach (var old in all.Where(kv => DateTime.UtcNow - kv.Value.CreatedUtc > KeepFor).Select(kv => kv.Key).ToList())
+            // Not one still holding a replaced file to delete, or a re-record still under way.
+            foreach (var old in all.Where(kv => DateTime.UtcNow - kv.Value.CreatedUtc > KeepFor
+                    && !kv.Value.ReplacedFiles.Any(f => !f.Deleted)
+                    && kv.Value.State is not (Waiting or Scheduled))
+                .Select(kv => kv.Key).ToList())
             {
                 all.Remove(old);
             }

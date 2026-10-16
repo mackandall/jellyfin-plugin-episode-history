@@ -12,6 +12,7 @@ using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaSegments;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Model.LiveTv;
 using MediaBrowser.Controller.LiveTv;
@@ -46,6 +47,7 @@ public sealed class HistoryController : ControllerBase
     private readonly ScheduleLedger _ledger;
     private readonly Programmes _programmes;
     private readonly RecordingChannels _channels;
+    private readonly Airings _airings;
     private readonly ILogger<HistoryController> _logger;
 
     public HistoryController(
@@ -66,8 +68,10 @@ public sealed class HistoryController : ControllerBase
         ScheduleLedger ledger,
         Programmes programmes,
         RecordingChannels channels,
+        Airings airings,
         ILogger<HistoryController> logger)
     {
+        _airings = airings;
         _channels = channels;
         _ledger = ledger;
         _programmes = programmes;
@@ -1081,4 +1085,184 @@ public sealed class HistoryController : ControllerBase
         Guid.TryParse(User.FindFirst("Jellyfin-UserId")?.Value, out var id) ? id : Guid.Empty;
 
     private static GuideMarker Marker() => new(Plugin.Instance?.Configuration ?? new PluginConfiguration());
+
+    // ---- Other airings and Re-record -----------------------------------------------------------
+
+    /// <summary>
+    /// "Other airings": the airings of a movie or episode still to come in the guide (or on now),
+    /// soonest first, each with its channel, whether the channel is commercial-free, a recording
+    /// already set for it, and the recordings already set then (<c>Busy</c> of <c>Tuners</c>;
+    /// <c>Clash</c> when every tuner is taken). Asked by a library item, a guide entry, or a name
+    /// (with <paramref name="year"/> and <paramref name="movie"/>, for titles not in the library).
+    /// </summary>
+    [HttpGet("Airings")]
+    [Authorize]
+    public async Task<IActionResult> GetAirings(
+        [FromQuery] Guid? itemId,
+        [FromQuery] Guid? programId,
+        [FromQuery] string? name,
+        [FromQuery] int? year,
+        [FromQuery] bool movie,
+        CancellationToken cancellationToken)
+    {
+        EpisodeIdentity? identity = null;
+        string? title = null;
+        if (itemId is { } iid && _libraryManager.GetItemById(iid) is { } item)
+        {
+            identity = _repair.For(item.Path)?.Identity ?? EpisodeIdentity.FromLibraryItem(item, Marker(), _store.GetProgramIdForItem(item.Id));
+            title = item is Episode ep ? ep.SeriesName + " · " + ep.Name : item.Name;
+        }
+        else if (programId is { } pid && _libraryManager.GetItemById(pid) is LiveTvProgram program)
+        {
+            identity = EpisodeIdentity.FromProgram(program, Marker());
+            title = program.Name + (string.IsNullOrEmpty(program.EpisodeTitle) ? string.Empty : " · " + Marker().Strip(program.EpisodeTitle));
+        }
+        else if (!string.IsNullOrWhiteSpace(name))
+        {
+            identity = new EpisodeIdentity(null, name.Trim(), null, null, null, null, movie, year);
+            title = name.Trim();
+        }
+
+        if (identity is null)
+        {
+            return NotFound();
+        }
+
+        var airings = await _airings.FindAsync(identity, cancellationToken).ConfigureAwait(false);
+        return Ok(new
+        {
+            Title = title,
+            identity.IsMovie,
+            Tuners = airings.Select(a => a.Tuners).DefaultIfEmpty(0).Max(),
+            Airings = airings.Select(a => new
+            {
+                a.ProgramId,
+                a.Name,
+                a.EpisodeTitle,
+                a.Season,
+                a.Episode,
+                a.Year,
+                Start = a.StartUtc,
+                End = a.EndUtc,
+                a.ChannelId,
+                a.ChannelName,
+                a.ChannelNumber,
+                a.HasLogo,
+                a.CommercialFree,
+                a.Recording,
+                a.Busy,
+                a.Tuners,
+                a.Clash,
+                a.Clashes,
+                IsThis = programId is { } p && p == a.ProgramId,
+                OnNow = a.StartUtc <= DateTime.UtcNow
+            })
+        });
+    }
+
+    // A recording Jellyfin made (its DVR folders, or followed since: moved to an archive by name,
+    // its history row, its channel note); not a file another DVR or a disc backup left in a library.
+    private bool IsJellyfinRecording(Video item)
+    {
+        if (string.IsNullOrEmpty(item.Path))
+        {
+            return false;
+        }
+
+        return RecordingFiles.IsUnder(item.Path, _recordings.RecordingFolders())
+            || _repair.For(item.Path) is not null
+            || _channels.For(item.Path) is not null
+            || _store.LoadRecorded().Any(r => r.ItemId == item.Id && r.Source is "recording" or "added");
+    }
+
+    /// <summary>
+    /// Whether "Re-record…" is offered for an item (<c>Eligible</c>, or <c>Why</c> not), and where
+    /// it stands: <c>State</c> waiting / scheduled / replaced / gaveup / kept, with the chip text.
+    /// </summary>
+    [HttpGet("Item/{itemId}/Rerecord")]
+    [Authorize]
+    public async Task<IActionResult> RerecordState([FromRoute] Guid itemId)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item || item is not (Movie or Episode))
+        {
+            return Ok(new { Eligible = false, Why = "Only movies and episodes." });
+        }
+
+        var p = _repair.For(item.Path);
+        var jellyfin = IsJellyfinRecording(item);
+        var identity = p?.Identity ?? EpisodeIdentity.FromLibraryItem(item, Marker(), _store.GetProgramIdForItem(item.Id));
+        var why = !jellyfin ? "Not recorded by Jellyfin: look for it with Other airings."
+            : !RecordingRepair.Reliable(identity) ? "The guide can't tell this from its other episodes."
+            : _recordings.IsRecordingNow(item) ? "It is still recording."
+            : null;
+        var warning = _repair.Warning(item.Path);
+        return Ok(new
+        {
+            Eligible = why is null,
+            Why = why,
+            CanManage = (await _authorization.AuthorizeAsync(User, Policies.LiveTvManagement).ConfigureAwait(false)).Succeeded,
+            State = p?.State is Programmes.Waiting or Programmes.Scheduled or Programmes.GaveUp ? p.State : p?.Manual == true ? p.State : null,
+            Asked = p?.Manual == true,
+            p?.Reason,
+            NextStart = p?.State == Programmes.Scheduled ? p.NextStartUtc : null,
+            NextChannel = p?.State == Programmes.Scheduled ? p.NextChannel : null,
+            warning.Short,
+            warning.Text
+        });
+    }
+
+    /// <summary>
+    /// "Re-record…": records a flawed Jellyfin recording again, at <paramref name="programId"/>
+    /// (an airing from Other airings) or the best airing found (a free tuner, commercial-free,
+    /// soonest; searched again every 20 minutes when the guide has none yet). The new recording
+    /// replaces this one when it is in full: renamed, then deleted after the keep days, by setting.
+    /// </summary>
+    [HttpPost("Item/{itemId}/Rerecord")]
+    [Authorize(Policy = Policies.LiveTvManagement)]
+    public async Task<IActionResult> Rerecord([FromRoute] Guid itemId, [FromQuery] Guid? programId, [FromQuery] string? reason, CancellationToken cancellationToken)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item || item is not (Movie or Episode) || !IsJellyfinRecording(item))
+        {
+            return BadRequest(new { Message = "Only recordings Jellyfin made can be re-recorded; look for others with Other airings." });
+        }
+
+        var identity = _repair.For(item.Path)?.Identity ?? EpisodeIdentity.FromLibraryItem(item, Marker(), _store.GetProgramIdForItem(item.Id));
+        if (identity is null || !RecordingRepair.Reliable(identity))
+        {
+            return BadRequest(new { Message = "The guide can't tell this from its other episodes." });
+        }
+
+        try
+        {
+            var p = await _repair.RequestAsync(item, identity, programId, reason, cancellationToken).ConfigureAwait(false);
+            var scheduled = p?.State == Programmes.Scheduled;
+            return Ok(new
+            {
+                State = p?.State,
+                NextStart = scheduled ? p!.NextStartUtc : null,
+                NextChannel = scheduled ? p!.NextChannel : null,
+                Message = scheduled
+                    ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "Re-records {0:ddd MMM d, h:mm tt}{1}.", p!.NextStartUtc!.Value.ToLocalTime(), p.NextChannel is null ? string.Empty : " on " + p.NextChannel)
+                    : "No airing in the guide yet; it goes on looking for " + Math.Clamp((Plugin.Instance?.Configuration ?? new PluginConfiguration()).RerecordGiveUpDays, 1, 365) + " days."
+            });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { ex.Message });
+        }
+    }
+
+    /// <summary>Calls a re-record off: the recording is kept as it is, and a recording set for it is cancelled.</summary>
+    [HttpDelete("Item/{itemId}/Rerecord")]
+    [Authorize(Policy = Policies.LiveTvManagement)]
+    public async Task<IActionResult> CancelRerecord([FromRoute] Guid itemId, CancellationToken cancellationToken)
+    {
+        if (_libraryManager.GetItemById(itemId) is not Video item)
+        {
+            return NotFound();
+        }
+
+        await _repair.KeepAsync(item.Path, cancellationToken).ConfigureAwait(false);
+        return NoContent();
+    }
 }

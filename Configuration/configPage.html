@@ -176,11 +176,22 @@
                         </select>
                     </div>
                     <div class="selectContainer">
-                        <label class="selectLabel" for="RerecordReplace">When the full copy is in</label>
+                        <label class="selectLabel" for="RerecordReplace">When the new recording is in full</label>
                         <select id="RerecordReplace" is="emby-select">
-                            <option value="delete">Delete the incomplete recording</option>
+                            <option value="rename">Rename the old recording, delete it after the days below</option>
+                            <option value="delete">Delete the old recording at once</option>
                             <option value="keep">Keep every version</option>
                         </select>
+                        <div class="fieldDescription">Also for "Re-record…" in a recording's menu (recordings Jellyfin made only). A renamed one ends in ".replaced", out of the library.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="RerecordKeepDays">Days to keep a renamed old recording</label>
+                        <input id="RerecordKeepDays" type="number" min="0" max="365" is="emby-input" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="CommercialFreeChannels">Commercial-free channels</label>
+                        <input id="CommercialFreeChannels" type="text" is="emby-input" />
+                        <div class="fieldDescription">Comma-separated; a channel whose name starts with one counts. Other airings marks them, and a re-record prefers them.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="RerecordMaxAttempts">Most airings recorded to replace one recording</label>
@@ -562,7 +573,9 @@
                         page.querySelector("#AutoRerecord").checked = config.AutoRerecord !== false;
                         page.querySelector("#RerecordBelowPercent").value = config.RerecordBelowPercent ?? 97;
                         page.querySelector("#RerecordChannelScope").value = config.RerecordChannelScope || "any";
-                        page.querySelector("#RerecordReplace").value = config.RerecordReplace || "delete";
+                        page.querySelector("#RerecordReplace").value = config.RerecordReplace || "rename";
+                        page.querySelector("#RerecordKeepDays").value = config.RerecordKeepDays ?? 14;
+                        page.querySelector("#CommercialFreeChannels").value = config.CommercialFreeChannels ?? "";
                         page.querySelector("#RerecordMaxAttempts").value = config.RerecordMaxAttempts ?? 2;
                         page.querySelector("#RerecordGiveUpDays").value = config.RerecordGiveUpDays ?? 30;
                         page.querySelector("#WatchFailedRecordings").checked = config.WatchFailedRecordings !== false;
@@ -706,6 +719,8 @@
                         config.RerecordBelowPercent = num("#RerecordBelowPercent", 97, 50, 100);
                         config.RerecordChannelScope = page.querySelector("#RerecordChannelScope").value;
                         config.RerecordReplace = page.querySelector("#RerecordReplace").value;
+                        config.RerecordKeepDays = num("#RerecordKeepDays", 14, 0, 365);
+                        config.CommercialFreeChannels = page.querySelector("#CommercialFreeChannels").value.trim();
                         config.RerecordMaxAttempts = num("#RerecordMaxAttempts", 2, 1, 10);
                         config.RerecordGiveUpDays = num("#RerecordGiveUpDays", 30, 1, 365);
                         config.WatchFailedRecordings = page.querySelector("#WatchFailedRecordings").checked;

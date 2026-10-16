@@ -86,8 +86,20 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Where another airing may be: "any" channel, or the "same" channel only.</summary>
     public string RerecordChannelScope { get; set; } = "any";
 
-    /// <summary>Once a full copy is in: "delete" the incomplete recording, or "keep" every version.</summary>
-    public string RerecordReplace { get; set; } = "delete";
+    /// <summary>
+    /// Once a full copy is in: "rename" the old recording (out of the library) and delete it after
+    /// <see cref="RerecordKeepDays"/>, "delete" it at once, or "keep" every version.
+    /// </summary>
+    public string RerecordReplace { get; set; } = "rename";
+
+    /// <summary>Days a recording replaced by a new one is kept, renamed, before it is deleted.</summary>
+    public int RerecordKeepDays { get; set; } = 14;
+
+    /// <summary>
+    /// Channels without commercials (comma-separated; a channel whose name starts with one counts):
+    /// "Other airings" marks them, and a re-record prefers them.
+    /// </summary>
+    public string CommercialFreeChannels { get; set; } = "HBO, Cinemax, Starz, Encore, Showtime, MGM, Epix, The Movie Channel, TMC, Flix, Max, Paramount+ with Showtime";
 
     /// <summary>Most airings recorded to replace one incomplete recording.</summary>
     public int RerecordMaxAttempts { get; set; } = 2;

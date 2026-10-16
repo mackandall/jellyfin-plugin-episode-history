@@ -50,6 +50,7 @@ public sealed class RecordingRepair
     private static readonly Regex PieceSuffix = new(@" - (\d+)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly Programmes _programmes;
+    private readonly Airings _airings;
     private readonly StallNotes _stalls;
     private readonly HistoryStore _store;
     private readonly ILibraryManager _libraryManager;
@@ -60,9 +61,11 @@ public sealed class RecordingRepair
     private int _joining;
     private DateTime _lastSearch = DateTime.MinValue;
     private DateTime _lastClean = DateTime.MinValue;
+    private readonly SemaphoreSlim _searching = new(1, 1);
 
     public RecordingRepair(
         Programmes programmes,
+        Airings airings,
         StallNotes stalls,
         HistoryStore store,
         ILibraryManager libraryManager,
@@ -72,6 +75,7 @@ public sealed class RecordingRepair
         ILogger<RecordingRepair> logger)
     {
         _programmes = programmes;
+        _airings = airings;
         _stalls = stalls;
         _store = store;
         _libraryManager = libraryManager;
@@ -107,6 +111,7 @@ public sealed class RecordingRepair
         {
             _lastClean = now;
             PieceJoiner.DeleteOldPieces(RecordingFiles.Folders(_recordingsManager), cfg.JoinKeepPiecesDays, _logger);
+            DeleteReplaced(cfg);
         }
 
         // Only airings with something left to do: undecided ones, and joined ones not yet in the history.
@@ -131,8 +136,9 @@ public sealed class RecordingRepair
             }
         }
 
-        if (cfg.AutoRerecord && now - _lastSearch > SearchEvery
-            && _programmes.All().Any(p => p.State is Programmes.Waiting or Programmes.Scheduled))
+        // Asked-for re-records are looked after even with the automatic one turned off.
+        if (now - _lastSearch > SearchEvery
+            && _programmes.All().Any(p => p.State is Programmes.Waiting or Programmes.Scheduled && (cfg.AutoRerecord || p.Manual)))
         {
             _lastSearch = now;
             await SearchAsync(cfg, ct).ConfigureAwait(false);
@@ -355,42 +361,70 @@ public sealed class RecordingRepair
     }
 
     private static bool Same(Programmes.Programme a, Programmes.Programme b) =>
-        a.Identity is { } x && b.Identity is { } y && x.SameEpisode(y);
+        a.Identity is { } x && b.Identity is { } y && Airings.Same(x, y);
 
-    // A full copy is in: the incomplete one (and incomplete tries at replacing it) go, or stay, by setting.
+    // A full copy is in: the old one (and incomplete tries at replacing it) are renamed out of the
+    // library and deleted after the keep days, deleted at once, or kept, by setting.
     private void Replace(Programmes.Programme old, Programmes.Programme full, PluginConfiguration cfg)
     {
-        var delete = !string.Equals(cfg.RerecordReplace, "keep", StringComparison.OrdinalIgnoreCase);
+        var mode = (cfg.RerecordReplace ?? string.Empty).ToLowerInvariant() switch
+        {
+            "keep" => "keep",
+            "delete" => "delete",
+            _ => "rename"
+        };
         var folders = RecordingFiles.Folders(_recordingsManager);
         var group = _programmes.All().Where(q => q.Key == old.Key || (q.State == Programmes.Attempt && Same(q, old))).ToList();
-        var deleted = 0;
-        if (delete)
+        var keep = full.Files().ToHashSet(StringComparer.Ordinal);
+        var replaced = new Dictionary<string, List<Programmes.ReplacedFile>>(StringComparer.Ordinal);
+        var done = 0;
+        if (mode != "keep")
         {
-            foreach (var file in group.SelectMany(q => q.Files()).Where(f => RecordingFiles.IsUnder(f, folders)))
+            foreach (var q in group)
             {
-                if (_recordingsManager.GetActiveRecordingInfo(file) is not null)
+                // An asked-for re-record may be of a recording since moved to an archive; the
+                // automatic ones only ever touch the recordings folders.
+                foreach (var file in FilesOf(q).Where(f => !keep.Contains(f) && (q.Manual || RecordingFiles.IsUnder(f, folders))))
                 {
-                    continue;
-                }
-
-                try
-                {
-                    if (RecordingFiles.ItemAt(_libraryManager, file) is { } item)
+                    if (_recordingsManager.GetActiveRecordingInfo(file) is not null)
                     {
-                        _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = true }, true);
-                    }
-                    else
-                    {
-                        File.Delete(file);
-                        RecordingTidy.DeleteSideFiles(file, _logger);
+                        continue;
                     }
 
-                    _stalls.Remove(file);
-                    deleted++;
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-                {
-                    _logger.LogWarning(ex, "Couldn't delete the incomplete recording {File}", file);
+                    try
+                    {
+                        if (mode == "delete")
+                        {
+                            if (RecordingFiles.ItemAt(_libraryManager, file) is { } item)
+                            {
+                                _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = true }, true);
+                            }
+                            else
+                            {
+                                File.Delete(file);
+                                RecordingTidy.DeleteSideFiles(file, _logger);
+                            }
+                        }
+                        else
+                        {
+                            var entry = new Programmes.ReplacedFile { Path = file, ReplacedUtc = DateTime.UtcNow };
+                            File.Move(file, entry.RenamedPath, true);
+                            _libraryMonitor.ReportFileSystemChanged(Path.GetDirectoryName(file)!);
+                            if (!replaced.TryGetValue(q.Key, out var list))
+                            {
+                                replaced[q.Key] = list = new List<Programmes.ReplacedFile>();
+                            }
+
+                            list.Add(entry);
+                        }
+
+                        _stalls.Remove(file);
+                        done++;
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                    {
+                        _logger.LogWarning(ex, "Couldn't {What} the replaced recording {File}", mode, file);
+                    }
                 }
             }
         }
@@ -400,17 +434,95 @@ public sealed class RecordingRepair
             foreach (var q in group.Select(g => all.GetValueOrDefault(g.Key)).OfType<Programmes.Programme>())
             {
                 q.State = Programmes.Replaced;
+                if (replaced.TryGetValue(q.Key, out var list))
+                {
+                    q.ReplacedFiles.AddRange(list);
+                }
             }
         });
         _logger.LogInformation(
             "{Title} was recorded again in full ({Percent:F0}%); {What}",
-            full.Title, full.Percent, delete ? deleted + " incomplete file(s) deleted" : "the incomplete files were kept");
+            full.Title,
+            full.Percent,
+            mode switch
+            {
+                "delete" => done + " old file(s) deleted",
+                "rename" => done + " old file(s) renamed, to be deleted in " + Math.Clamp(cfg.RerecordKeepDays, 0, 365) + " days",
+                _ => "the old files were kept"
+            });
+    }
+
+    // Where an airing's recording is now: the library item it was asked for on (it may have moved
+    // to an archive), else its files in the recordings folders.
+    private List<string> FilesOf(Programmes.Programme q) =>
+        q.ItemId is { } id && _libraryManager.GetItemById(id) is Video v && !string.IsNullOrEmpty(v.Path) && File.Exists(v.Path)
+            ? new List<string> { v.Path }
+            : q.Files();
+
+    // Replaced recordings past the keep days go for good, with their side files (unless a new
+    // recording took the same name in the same folder).
+    private void DeleteReplaced(PluginConfiguration cfg)
+    {
+        var days = Math.Clamp(cfg.RerecordKeepDays, 0, 365);
+        var now = DateTime.UtcNow;
+        var gone = new List<(string Key, string Path)>();
+        foreach (var p in _programmes.All())
+        {
+            foreach (var f in p.ReplacedFiles.Where(f => !f.Deleted && now - f.ReplacedUtc >= TimeSpan.FromDays(days)))
+            {
+                try
+                {
+                    if (File.Exists(f.RenamedPath))
+                    {
+                        File.Delete(f.RenamedPath);
+                    }
+
+                    if (!File.Exists(f.Path))
+                    {
+                        RecordingTidy.DeleteSideFiles(f.Path, _logger);
+                    }
+
+                    gone.Add((p.Key, f.Path));
+                    _logger.LogInformation("Deleted {File}, replaced by a new recording {Days} days ago", f.RenamedPath, days);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _logger.LogWarning(ex, "Couldn't delete the replaced recording {File}", f.RenamedPath);
+                }
+            }
+        }
+
+        if (gone.Count > 0)
+        {
+            _programmes.Change(all =>
+            {
+                foreach (var (key, path) in gone)
+                {
+                    if (all.TryGetValue(key, out var p) && p.ReplacedFiles.FirstOrDefault(f => f.Path == path) is { } f)
+                    {
+                        f.Deleted = true;
+                    }
+                }
+            });
+        }
     }
 
     private async Task SearchAsync(PluginConfiguration cfg, CancellationToken ct)
     {
+        await _searching.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await SearchLockedAsync(cfg, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _searching.Release();
+        }
+    }
+
+    private async Task SearchLockedAsync(PluginConfiguration cfg, CancellationToken ct)
+    {
         var now = DateTime.UtcNow;
-        var marker = new GuideMarker(cfg);
         var sameChannel = string.Equals(cfg.RerecordChannelScope, "same", StringComparison.OrdinalIgnoreCase);
         var max = Math.Clamp(cfg.RerecordMaxAttempts, 1, 10);
         var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items;
@@ -418,8 +530,7 @@ public sealed class RecordingRepair
             string.Equals(t.ProgramId, programId, StringComparison.OrdinalIgnoreCase)
             && t.Status is not (RecordingStatus.Cancelled or RecordingStatus.Completed or RecordingStatus.Error));
 
-        List<LiveTvProgram>? upcoming = null;
-        foreach (var p in _programmes.All().Where(p => p.State is Programmes.Waiting or Programmes.Scheduled))
+        foreach (var p in _programmes.All().Where(p => p.State is Programmes.Waiting or Programmes.Scheduled && (cfg.AutoRerecord || p.Manual)))
         {
             if (p.State == Programmes.Scheduled)
             {
@@ -454,27 +565,19 @@ public sealed class RecordingRepair
                 continue;
             }
 
-            upcoming ??= _libraryManager.GetItemList(new InternalItemsQuery
-                {
-                    IncludeItemTypes = new[] { BaseItemKind.LiveTvProgram },
-                    MinStartDate = now
-                })
-                .OfType<LiveTvProgram>()
-                .OrderBy(x => x.StartDate)
-                .ToList();
-            var names = new[] { identity.SeriesName, identity.SeriesAlt }.Select(EpisodeIdentity.Normalize).Where(n => n.Length > 0).ToHashSet(StringComparer.Ordinal);
-            var next = upcoming
-                .Where(x => (identity.ValidProgramId is { } id && string.Equals(x.ShowId, id, StringComparison.Ordinal))
-                    || names.Contains(EpisodeIdentity.Normalize(marker.Strip(x.Name) ?? x.Name)))
-                .Where(x => EpisodeIdentity.FromProgram(x, marker).SameEpisode(identity))
-                .Where(x => !sameChannel || string.Equals((_libraryManager.GetItemById(x.ChannelId) as LiveTvChannel)?.ExternalId, p.ChannelId, StringComparison.OrdinalIgnoreCase))
-                .FirstOrDefault();
+            // An airing with a recording set already will do; else the best of the rest (a free
+            // tuner, commercial-free, soonest). "The same channel" applies to the automatic ones.
+            var found = await _airings.FindAsync(identity, ct).ConfigureAwait(false);
+            bool OnChannel(Airings.Airing a) => !sameChannel || p.Manual
+                || string.Equals((_libraryManager.GetItemById(a.ChannelId) as LiveTvChannel)?.ExternalId, p.ChannelId, StringComparison.OrdinalIgnoreCase);
+            var next = found.FirstOrDefault(a => a.StartUtc > now && a.Recording is not null && OnChannel(a))
+                ?? Airings.Best(found.Where(a => a.Recording is null), now, OnChannel);
             if (next is null)
             {
                 continue;
             }
 
-            var programId = next.Id.ToString("N");
+            var programId = next.ProgramId.ToString("N");
             var ours = !Active(programId);
             try
             {
@@ -489,19 +592,19 @@ public sealed class RecordingRepair
                 continue;
             }
 
-            var channel = _libraryManager.GetItemById(next.ChannelId)?.Name;
+            var channel = next.ChannelName;
             Set(p, x =>
             {
                 x.State = Programmes.Scheduled;
                 x.Attempts++;
                 x.NextProgramId = programId;
-                x.NextStartUtc = next.StartDate;
+                x.NextStartUtc = next.StartUtc;
                 x.NextChannel = channel;
                 x.NextIsOurs = ours;
             });
             _logger.LogInformation(
                 "{Title} will be recorded again on {Start:u} ({Channel}){How}",
-                p.Title, next.StartDate, channel, ours ? string.Empty : ": a recording was already set for it");
+                p.Title, next.StartUtc, channel, ours ? string.Empty : ": a recording was already set for it");
         }
     }
 
@@ -707,6 +810,98 @@ public sealed class RecordingRepair
         }
     }
 
+    /// <summary>Where a recording stands with being recorded again, by its file (null: nothing asked or flagged).</summary>
+    public Programmes.Programme? For(string? path) => _programmes.ForFile(path);
+
+    /// <summary>
+    /// "Re-record…": a recording someone found a flaw in is recorded again, at
+    /// <paramref name="programId"/> (an airing they picked) or the best airing found in the guide
+    /// (searched now, then every 20 minutes for the give-up days). When the new recording is in
+    /// full, this one is replaced as the setting says. Returns the airing set, if any.
+    /// </summary>
+    public async Task<Programmes.Programme?> RequestAsync(Video item, EpisodeIdentity identity, Guid? programId, string? reason, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var key = _programmes.ForFile(item.Path)?.Key ?? "manual|" + item.Id.ToString("N");
+        var seconds = item.RunTimeTicks is { } ticks && ticks > 0 ? TimeSpan.FromTicks(ticks).TotalSeconds : 3600;
+        var title = item is MediaBrowser.Controller.Entities.TV.Episode ep && !string.IsNullOrEmpty(ep.SeriesName)
+            ? ep.SeriesName + " · " + item.Name
+            : item.Name;
+        _programmes.Change(all =>
+        {
+            if (!all.TryGetValue(key, out var p))
+            {
+                // A recording from before airings were tracked (or since moved): it stands for itself.
+                p = new Programmes.Programme
+                {
+                    Key = key,
+                    Title = title ?? string.Empty,
+                    Identity = identity,
+                    CreatedUtc = now,
+                    ProgramStartUtc = now - TimeSpan.FromSeconds(seconds),
+                    ProgramEndUtc = now,
+                    Pieces = new List<Programmes.Piece>
+                    {
+                        new() { Path = item.Path, FirstSeenUtc = now, EndedUtc = now, CapturedSeconds = seconds }
+                    }
+                };
+                all[key] = p;
+            }
+
+            p.Identity ??= identity;
+            p.Manual = true;
+            p.Reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+            p.ItemId = item.Id;
+            p.State = Programmes.Waiting;
+            p.FlaggedUtc = now;
+            p.Attempts = 0;
+            p.NextProgramId = null;
+            p.NextStartUtc = null;
+            p.NextChannel = null;
+        });
+
+        if (programId is { } picked)
+        {
+            if (_libraryManager.GetItemById(picked) is not LiveTvProgram program || program.StartDate <= now)
+            {
+                throw new ArgumentException("That airing isn't in the guide any more, or has started.");
+            }
+
+            var id = picked.ToString("N");
+            var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items;
+            var already = timers.Any(t => string.Equals(t.ProgramId, id, StringComparison.OrdinalIgnoreCase)
+                && t.Status is not (RecordingStatus.Cancelled or RecordingStatus.Completed or RecordingStatus.Error));
+            if (!already)
+            {
+                await ScheduleAsync(id, ct).ConfigureAwait(false);
+            }
+
+            var start = program.StartDate;
+            var channel = _libraryManager.GetItemById(program.ChannelId)?.Name;
+            _programmes.Change(all =>
+            {
+                if (all.TryGetValue(key, out var x))
+                {
+                    x.State = Programmes.Scheduled;
+                    x.Attempts = 1;
+                    x.NextProgramId = id;
+                    x.NextStartUtc = start;
+                    x.NextChannel = channel;
+                    x.NextIsOurs = !already;
+                }
+            });
+            _logger.LogInformation("{Title} will be recorded again on {Start:u} ({Channel}), as asked: {Reason}", title, start, channel, reason);
+        }
+        else
+        {
+            _logger.LogInformation("{Title} is to be recorded again at the best airing found, as asked: {Reason}", title, reason);
+            await SearchAsync(Config, ct).ConfigureAwait(false);
+            _lastSearch = DateTime.UtcNow;
+        }
+
+        return _programmes.All().FirstOrDefault(p => p.Key == key);
+    }
+
     private void Set(Programmes.Programme p, Action<Programmes.Programme> change) =>
         _programmes.Change(all =>
         {
@@ -721,7 +916,8 @@ public sealed class RecordingRepair
     {
         var note = _stalls.For(path);
         var p = _programmes.ForFile(path);
-        var story = note?.Text ?? (p is null || p.Percent >= 100 ? null : string.Format(
+        var asked = p is { Manual: true } ? "Re-record asked for" + (p.Reason is { } r ? " (" + r + ")" : string.Empty) + "." : null;
+        var story = note?.Text ?? asked ?? (p is null || p.Percent >= 100 ? null : string.Format(
             CultureInfo.InvariantCulture,
             "Only {0:F0} of {1:F0} min of the programme were recorded.",
             p.CapturedSeconds / 60,

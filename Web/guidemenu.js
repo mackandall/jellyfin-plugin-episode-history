@@ -574,6 +574,8 @@
   }, POLL_MS);
   setTimeout(pollChanges, 3000);
 
+  var AIRINGS_ROW_CLASS = 'episodeHistoryAiringsRow';
+
   function tryInject(fields) {
     var programId = lastProgramId;
     if (!programId || fields.getAttribute('data-eh-program') === programId) {
@@ -598,6 +600,16 @@
         showForgetRow(fields, programId, !!(info && info.CanForget));
         // Administrators only: for anyone else the dry run is refused and nothing is added.
         addForgetShowRow(fields, programId);
+        // "Other airings": every later airing of it, with clashes and commercial-free channels
+        // (the dialog lives in recordings.js).
+        if (window.EpisodeHistoryAirings && !fields.querySelector('.' + AIRINGS_ROW_CLASS)) {
+          var airings = buttonRow(AIRINGS_ROW_CLASS);
+          var ab = airings.querySelector('button');
+          ab.querySelector('.recordingIcon').className = 'material-icons recordingIcon event_repeat';
+          ab.querySelector('.buttonText').textContent = 'Other airings';
+          ab.addEventListener('click', function () { window.EpisodeHistoryAirings({ programId: programId }); });
+          fields.appendChild(airings);
+        }
       })
       .catch(function () {
         log('Episode History plugin not available for program ' + programId);

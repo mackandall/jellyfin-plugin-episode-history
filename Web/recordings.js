@@ -1087,6 +1087,11 @@
         var chip = card.querySelector('.episodeHistoryPartialChip');
         chip && chip.parentNode.removeChild(chip);
       });
+      rerecordEntries(id, function (icon, label, onClick) {
+        if (box.isConnected) {
+          box.appendChild(menuItem(icon, label, function () { closeMenu(); onClick(); }));
+        }
+      });
     }
     if (!single) {
       showDeleteEntry(id, name, function (label, onClick) {
@@ -1219,23 +1224,182 @@
           });
         });
       }
-      if (r.CanRecordAgain && (r.Partial || r.Stalled)) {
-        add('replay', 'Record again at the next airing', function () {
-          client.ajax({ type: 'POST', url: client.getUrl('EpisodeHistory/Item/' + id + '/RecordAgain'), dataType: 'json' }).then(function (a) {
-            if (!a || (!a.Scheduled && !a.AlreadyScheduled)) {
-              notify((a && a.Message) || 'The guide has no later airing of it yet.');
-              return;
-            }
-            var when = new Date(a.Start).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-            notify((a.AlreadyScheduled ? 'A recording is already set for ' : 'Recording it again on ') + when
-              + (a.Channel ? ' (' + a.Channel + ')' : '') + '. This recording is kept until you delete it.');
-          }, function () {
-            notify('The next airing couldn\'t be scheduled.');
-          });
-        });
-      }
     }).catch(function () {});
   }
+
+  /*
+   * "Re-record…" (recordings Jellyfin made: pick an airing or let it choose; the new recording
+   * replaces this one when it is in full), "Cancel re-record" once asked, and "Other airings…"
+   * for any movie or episode. Calls add(icon, label, onClick) per entry.
+   */
+  function rerecordEntries(id, add) {
+    var client = window.ApiClient;
+    client.ajax({ type: 'GET', url: client.getUrl('EpisodeHistory/Item/' + id + '/Rerecord'), dataType: 'json' }).then(function (r) {
+      if (!r) {
+        return;
+      }
+      var asked = r.Asked && (r.State === 'waiting' || r.State === 'scheduled');
+      if (r.CanManage && r.Eligible && !asked) {
+        add('replay', 'Re-record\u2026', function () { airingsDialog({ itemId: id, rerecord: true }); });
+      }
+      if (r.CanManage && asked) {
+        add('cancel', 'Cancel re-record' + (r.Short ? ' (' + r.Short + ')' : ''), function () {
+          client.ajax({ type: 'DELETE', url: client.getUrl('EpisodeHistory/Item/' + id + '/Rerecord') }).then(function () {
+            cache = {};
+            dateCache = {};
+            showCache = {};
+            notify('Re-record called off; this recording is kept as it is.');
+          }, function () { notify('The re-record couldn\'t be called off.'); });
+        });
+      }
+      add('event_repeat', 'Other airings\u2026', function () { airingsDialog({ itemId: id }); });
+    }).catch(function () {});
+  }
+
+  var REASONS = ['Partial', 'Picture trouble', 'Audio trouble', 'Ads or edited version', 'Other'];
+
+  /*
+   * Other airings of a movie or episode (opts.itemId, or opts.programId from the guide): when and
+   * where, commercial-free channels, recordings already set, and tuner clashes. With
+   * opts.rerecord, a reason and "Automatic" first, and "Re-record at this airing" per line;
+   * otherwise "Record" per line.
+   */
+  function airingsDialog(opts) {
+    var client = window.ApiClient;
+    var overlay = el('div');
+    // Over jellyfin-web's own dialogs (the guide's programme dialog is at 999999).
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:1000001;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;';
+    var box = el('div');
+    box.style.cssText = 'background:#202020;color:#fff;border-radius:10px;max-width:640px;width:100%;max-height:86vh;overflow:auto;padding:1.1em 1.3em;box-shadow:0 8px 40px rgba(0,0,0,.6);';
+    overlay.appendChild(box);
+    var head = el('h3', null, opts.rerecord ? 'Re-record' : 'Other airings');
+    head.style.cssText = 'margin:0 0 .2em;';
+    var sub = el('div', null, 'Looking in the guide\u2026');
+    sub.style.cssText = 'opacity:.75;margin-bottom:.8em;';
+    box.appendChild(head);
+    box.appendChild(sub);
+    var reason = null;
+    if (opts.rerecord) {
+      var row = el('div');
+      row.style.cssText = 'display:flex;flex-wrap:wrap;gap:.4em;margin-bottom:.8em;';
+      var pick = el('div', null, 'What\'s wrong with it?');
+      pick.style.cssText = 'width:100%;opacity:.8;font-size:.9em;';
+      row.appendChild(pick);
+      REASONS.forEach(function (r) {
+        var b = el('button', null, r);
+        b.type = 'button';
+        b.style.cssText = 'padding:.35em .8em;border-radius:1em;border:1px solid rgba(255,255,255,.3);background:none;color:inherit;cursor:pointer;';
+        b.addEventListener('click', function () {
+          reason = r;
+          [].slice.call(row.querySelectorAll('button')).forEach(function (x) { x.style.background = 'none'; });
+          b.style.background = 'rgba(0,164,220,.5)';
+        });
+        row.appendChild(b);
+      });
+      box.appendChild(row);
+    }
+    var list = el('div');
+    box.appendChild(list);
+    var foot = el('div');
+    foot.style.cssText = 'display:flex;justify-content:flex-end;gap:.6em;margin-top:1em;';
+    var closeBtn = el('button', null, 'Close');
+    closeBtn.type = 'button';
+    closeBtn.className = 'raised button-cancel emby-button';
+    foot.appendChild(closeBtn);
+    box.appendChild(foot);
+    function close() {
+      overlay.parentNode && overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape' || e.key === 'Backspace' || e.keyCode === 10009 || e.keyCode === 461) {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      }
+    }
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) { close(); } });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(overlay);
+    closeBtn.focus();
+
+    function rerecord(programId) {
+      var url = 'EpisodeHistory/Item/' + opts.itemId + '/Rerecord?' + (programId ? 'programId=' + programId + '&' : '') + (reason ? 'reason=' + encodeURIComponent(reason) : '');
+      client.ajax({ type: 'POST', url: client.getUrl(url), dataType: 'json' }).then(function (r) {
+        cache = {};
+        dateCache = {};
+        showCache = {};
+        close();
+        notify((r && r.Message) || 'Set to re-record.');
+      }, function (x) {
+        var m = x && x.responseJSON && x.responseJSON.Message;
+        notify(m || 'It couldn\'t be set to re-record.');
+      });
+    }
+    function record(a) {
+      client.getNewLiveTvTimerDefaults({ programId: a.ProgramId }).then(function (d) {
+        return client.createLiveTvTimer(d);
+      }).then(function () {
+        close();
+        notify('Recording ' + a.Name + ' on ' + when(a.Start) + '.');
+      }, function () { notify('It couldn\'t be scheduled.'); });
+    }
+    function when(iso) {
+      return new Date(iso).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+    var q = opts.itemId ? 'itemId=' + opts.itemId : 'programId=' + opts.programId;
+    client.ajax({ type: 'GET', url: client.getUrl('EpisodeHistory/Airings?' + q), dataType: 'json' }).then(function (r) {
+      var airings = (r && r.Airings || []).filter(function (a) { return !a.IsThis; });
+      sub.textContent = (r && r.Title ? r.Title + ' \u00b7 ' : '') + (airings.length
+        ? airings.length + ' airing' + (airings.length === 1 ? '' : 's') + ' in the guide' + (r.Tuners ? ' \u00b7 ' + r.Tuners + ' tuners' : '')
+        : (opts.programId ? 'No other airings in the guide.' : 'Not in the guide' + (opts.rerecord ? ' yet: Automatic goes on looking.' : '.')));
+      if (opts.rerecord) {
+        var auto = el('button', null, 'Automatic: the best airing (a free tuner, commercial-free, soonest)');
+        auto.type = 'button';
+        auto.className = 'raised button-submit emby-button';
+        auto.style.cssText = 'width:100%;margin-bottom:.8em;';
+        auto.addEventListener('click', function () { rerecord(null); });
+        list.appendChild(auto);
+      }
+      airings.forEach(function (a) {
+        var line = el('div');
+        line.style.cssText = 'display:flex;align-items:center;gap:.8em;padding:.55em .3em;border-top:1px solid rgba(255,255,255,.08);';
+        var text = el('div');
+        text.style.cssText = 'flex:1;min-width:0;';
+        var top = el('div', null, when(a.Start) + (a.OnNow ? ' (on now)' : ''));
+        top.style.fontWeight = '600';
+        var ch = el('div', null, [a.ChannelNumber, a.ChannelName].filter(Boolean).join(' ') + (a.EpisodeTitle ? ' \u00b7 ' + a.EpisodeTitle : ''));
+        ch.style.cssText = 'opacity:.8;font-size:.9em;';
+        text.appendChild(top);
+        text.appendChild(ch);
+        var chips = el('div');
+        chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:.3em;margin-top:.25em;';
+        function chip(t, bg, fg) {
+          var c = el('span', null, t);
+          c.style.cssText = 'font-size:.75em;font-weight:700;padding:.1em .5em;border-radius:.4em;background:' + bg + ';color:' + (fg || '#fff') + ';';
+          chips.appendChild(c);
+        }
+        if (a.CommercialFree) { chip('Commercial-free', '#2e7d32'); }
+        if (a.Recording) { chip(a.Recording === 'series' ? '\u25cf Series recording' : '\u25cf Recording', '#c62828'); }
+        if (a.Clash) { chip('All ' + a.Tuners + ' tuners busy' + (a.Clashes.length ? ': ' + a.Clashes.join(', ') : ''), '#f59e0b', '#111'); }
+        else if (a.Busy > 0) { chip(a.Busy + (a.Tuners ? ' of ' + a.Tuners : '') + ' tuners busy', 'rgba(255,255,255,.15)'); }
+        if (chips.childNodes.length) { text.appendChild(chips); }
+        line.appendChild(text);
+        if (!a.OnNow && !a.Recording) {
+          var act = el('button', null, opts.rerecord ? 'Re-record here' : 'Record');
+          act.type = 'button';
+          act.className = 'raised emby-button';
+          act.addEventListener('click', function () { if (opts.rerecord) { rerecord(a.ProgramId); } else { record(a); } });
+          line.appendChild(act);
+        }
+        list.appendChild(line);
+      });
+    }, function () {
+      sub.textContent = 'The guide couldn\'t be searched.';
+    });
+  }
+  window.EpisodeHistoryAirings = airingsDialog;
 
   // Calls add(label, onClick) when there's something the caller may delete.
   function showDeleteEntry(id, name, add, onDeleted) {
@@ -1481,6 +1645,12 @@
             why.style.cssText = 'padding:.6em 1.2em;font-size:.9em;line-height:1.35;color:#ffab91;max-width:26em;';
             why.textContent = text;
             scroller.insertBefore(why, scroller.firstChild);
+          }
+        });
+        var rrCount = 0;
+        rerecordEntries(id, function (icon, label, onClick) {
+          if (scroller.isConnected) {
+            scroller.appendChild(sheetEntry('episodehistory-rerecord-' + (rrCount++), icon, label, onClick));
           }
         });
         return;
