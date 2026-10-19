@@ -13,13 +13,9 @@ using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.Serialization;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
-
-// The plugin's settings are one static instance: the tests take turns.
-[assembly: CollectionBehavior(DisableTestParallelization = true)]
 
 namespace Jellyfin.Plugin.EpisodeHistory.Tests;
 
@@ -29,7 +25,7 @@ namespace Jellyfin.Plugin.EpisodeHistory.Tests;
 /// </summary>
 public sealed class TrashTests : IDisposable
 {
-    private static readonly PluginConfiguration Config = new();
+    private static PluginConfiguration Config => TestPlugin.Config;
 
     private readonly string _dir;
     private readonly string _library;
@@ -37,24 +33,9 @@ public sealed class TrashTests : IDisposable
     private readonly Mock<ILibraryManager> _libraryManager = new();
     private readonly Mock<ILibraryMonitor> _libraryMonitor = new();
 
-    static TrashTests()
-    {
-        var paths = new Mock<IApplicationPaths>();
-        var root = Path.Combine(Path.GetTempPath(), "eh-tests-plugin");
-        paths.Setup(p => p.PluginConfigurationsPath).Returns(root);
-        paths.Setup(p => p.PluginsPath).Returns(root);
-        paths.Setup(p => p.DataPath).Returns(root);
-        var xml = new Mock<IXmlSerializer>();
-        xml.Setup(x => x.DeserializeFromFile(typeof(PluginConfiguration), It.IsAny<string>())).Returns(Config);
-        _ = new Plugin(paths.Object, xml.Object).Configuration;
-    }
-
     public TrashTests()
     {
-        Config.TrashEnabled = true;
-        Config.TrashKeepDays = 2;
-        Config.TrashMinFreeGb = 0;
-        Config.TrashClearNasRecycle = false;
+        TestPlugin.Reset();
 
         _dir = Path.Combine(Path.GetTempPath(), "eh-tests-" + Guid.NewGuid().ToString("N"));
         _library = Path.Combine(_dir, "Movies");
