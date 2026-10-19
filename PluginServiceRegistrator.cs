@@ -3,6 +3,7 @@ using Jellyfin.Plugin.EpisodeHistory.Services;
 using Jellyfin.Plugin.EpisodeHistory.Web;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.EpisodeHistory;
@@ -28,10 +29,16 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<GuideSweeper>();
         serviceCollection.AddHostedService(sp => sp.GetRequiredService<GuideSweeper>());
         serviceCollection.AddHostedService<HistoryEvents>();
+        serviceCollection.AddSingleton<Trash>();
+        serviceCollection.AddHostedService(sp => sp.GetRequiredService<Trash>());
 
         // Jellyfin builds its MVC ApplicationPartManager from its own assembly before any
         // plugin loads and never re-scans, so a plugin's controllers are silently absent
         // unless it adds itself explicitly.
         serviceCollection.AddControllers().AddApplicationPart(typeof(HistoryController).Assembly);
+
+        // Jellyfin's own item deletes, from any app, go to the trash too.
+        serviceCollection.AddSingleton<TrashFilter>();
+        serviceCollection.Configure<MvcOptions>(o => o.Filters.AddService<TrashFilter>());
     }
 }

@@ -50,6 +50,12 @@
     script.src = '/EpisodeHistory/web/recordings.js';
     document.head.appendChild(script);
 
+    // The trash (Live TV > Recordings) and its wording in delete confirmations.
+    var trash = document.createElement('script');
+    trash.defer = true;
+    trash.src = '/EpisodeHistory/web/trash.js';
+    document.head.appendChild(trash);
+
     // JellyDVR Schedule's "all tuners are busy" message (a 404 without that plugin is harmless).
     var tuners = document.createElement('script');
     tuners.defer = true;

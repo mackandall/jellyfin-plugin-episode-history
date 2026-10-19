@@ -232,6 +232,11 @@
     }
   }
 
+  // How long the trash keeps a delete (trash.js); null when deletes are for good.
+  function trashDays() {
+    return window.EpisodeHistoryTrash ? window.EpisodeHistoryTrash.days : null;
+  }
+
   function el(tag, className, text) {
     var e = document.createElement(tag);
     if (className) {
@@ -1113,7 +1118,7 @@
         var text = del.querySelector('.eh-menu-text');
         if (!armed) {
           armed = true;
-          text.textContent = 'Press again to delete for good';
+          text.textContent = trashDays() != null ? 'Press again to move it to the trash' : 'Press again to delete for good';
           del.style.color = '#ff6b6b';
           return;
         }
@@ -1435,7 +1440,10 @@
     var h = el('h2', null, 'Delete all recordings?');
     h.style.cssText = 'margin:0 0 .5em;font-size:1.3em;font-weight:500;';
     box.appendChild(h);
-    var p = el('div', null, name + ': ' + r.Count + ' recording' + (r.Count === 1 ? '' : 's') + ' (' + gbText(r.Bytes) + ') in the recordings folders will be deleted from the disk. This can\'t be undone.');
+    var p = el('div', null, name + ': ' + r.Count + ' recording' + (r.Count === 1 ? '' : 's') + ' (' + gbText(r.Bytes) + ') in the recordings folders will be '
+      + (trashDays() != null
+        ? 'moved to the trash, and deleted for good after ' + trashDays() + (trashDays() === 1 ? ' day' : ' days') + '. Until then, Restore in Live TV \u203a Recordings \u203a Trash puts them back.'
+        : 'deleted from the disk. This can\'t be undone.'));
     p.style.cssText = 'margin-bottom:.6em;line-height:1.4;';
     box.appendChild(p);
     var kept = el('div', null, 'Archived copies are kept, and the episodes stay in the history as recorded.'
@@ -1460,7 +1468,7 @@
         close();
         cache = {};
         dateCache = {};
-        notify('Deleted ' + done.Deleted + ' recording' + (done.Deleted === 1 ? '' : 's') + ' of ' + name + '.'
+        notify('Deleted ' + done.Deleted + ' recording' + (done.Deleted === 1 ? '' : 's') + ' of ' + name + (done.Trashed ? ' to the trash.' : '.')
           + (done.Skipped ? ' ' + done.Skipped + ' left (recording now, or not yours to delete).' : ''));
         if (onDeleted) {
           onDeleted();

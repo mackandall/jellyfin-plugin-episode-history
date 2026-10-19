@@ -28,6 +28,11 @@ public sealed class WebAssetsController : ControllerBase
     [Produces("application/javascript")]
     public Task<ContentResult> GetRecordingsJs() => Embedded("recordings.js");
 
+    /// <summary>The trash on Live TV > Recordings, and trash wording in delete confirmations; guidemenu.js loads it.</summary>
+    [HttpGet("trash.js")]
+    [Produces("application/javascript")]
+    public Task<ContentResult> GetTrashJs() => Embedded("trash.js");
+
     private async Task<ContentResult> Embedded(string fileName)
     {
         var assembly = typeof(WebAssetsController).Assembly;

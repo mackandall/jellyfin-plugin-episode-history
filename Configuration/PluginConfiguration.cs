@@ -124,6 +124,27 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool TidyDeletedRecordings { get; set; } = true;
 
     /// <summary>
+    /// Deleting a recording or video (from any app) moves it to a trash bin it can be put back
+    /// from, as Channels DVR does, instead of deleting it at once.
+    /// </summary>
+    public bool TrashEnabled { get; set; } = true;
+
+    /// <summary>Days a deleted recording stays in the trash before it's deleted for good.</summary>
+    public int TrashKeepDays { get; set; } = 2;
+
+    /// <summary>
+    /// When a drive has less free space than this (GB), its trash is emptied early, oldest first,
+    /// until it has enough. 0: only <see cref="TrashKeepDays"/> empties it.
+    /// </summary>
+    public int TrashMinFreeGb { get; set; } = 50;
+
+    /// <summary>
+    /// When the trash deletes something for good on a NAS share with a recycle bin (#recycle),
+    /// also delete the copy the NAS keeps there, so the space really comes free.
+    /// </summary>
+    public bool TrashClearNasRecycle { get; set; } = true;
+
+    /// <summary>
     /// A file in the recordings folders that the plugin didn't see being recorded (library
     /// import, or copied in by hand) only counts as recorded if it is at least this long, so
     /// a stub from a recording stopped early doesn't block the next airing.

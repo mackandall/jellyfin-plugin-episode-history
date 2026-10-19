@@ -370,6 +370,46 @@
                     </div>
                 </div>
 
+                <div class="verticalSection">
+                    <h2>Trash</h2>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="TrashEnabled" type="checkbox" is="emby-checkbox" />
+                            <span>Deleting moves recordings and videos to the trash</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            As in Channels DVR: a delete from any app (JDVR, this web client, others) moves the files to a hidden
+                            .jdvr-trash folder on the same drive, and the item leaves the library. It can be put back from the list
+                            below until it's deleted for good. Off: deletes are immediate, as before.
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="TrashKeepDays">Days to keep deleted items</label>
+                        <input id="TrashKeepDays" type="number" min="0" max="365" is="emby-input" />
+                        <div class="fieldDescription">After this many days in the trash, an item is deleted for good.</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="TrashMinFreeGb">Empty the trash early below this much free space (GB)</label>
+                        <input id="TrashMinFreeGb" type="number" min="0" max="100000" is="emby-input" />
+                        <div class="fieldDescription">When a drive has less free space than this, its trash is deleted for good, oldest first, until it has enough. Checked every 10 minutes and after each delete. 0: off.</div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="TrashClearNasRecycle" type="checkbox" is="emby-checkbox" />
+                            <span>Also clear the NAS recycle bin's copy</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            A NAS share with a recycle bin (#recycle) keeps whatever is deleted over the network, on the same disk,
+                            so emptying the trash would free nothing. With this on, the copy of the trash's own files is removed
+                            from #recycle too. Nothing else in #recycle is touched.
+                        </div>
+                    </div>
+                </div>
+
                 <div>
                     <button type="submit" is="emby-button" class="raised button-submit block">
                         <span>Save</span>
@@ -386,6 +426,16 @@
                         <span>Import history from library</span>
                     </button>
                     <div id="ActionResult" class="fieldDescription" style="margin-top:0.5em;white-space:pre-line;"></div>
+                </div>
+
+                <div class="verticalSection">
+                    <h2>In the trash</h2>
+                    <div id="TrashSummary" class="fieldDescription"></div>
+                    <div id="TrashList" style="margin:0.6em 0;"></div>
+                    <button id="TrashEmptyBtn" type="button" is="emby-button" class="raised block">
+                        <span>Empty the trash now</span>
+                    </button>
+                    <div id="TrashResult" class="fieldDescription" style="margin-top:0.5em;"></div>
                 </div>
 
                 <div class="verticalSection">
@@ -567,6 +617,10 @@
                         page.querySelector("#MinRecordedPercent").value = config.MinRecordedPercent;
                         page.querySelector("#CountAllLibraries").checked = config.CountAllLibraries;
                         page.querySelector("#TidyDeletedRecordings").checked = config.TidyDeletedRecordings !== false;
+                        page.querySelector("#TrashEnabled").checked = config.TrashEnabled !== false;
+                        page.querySelector("#TrashKeepDays").value = config.TrashKeepDays ?? 2;
+                        page.querySelector("#TrashMinFreeGb").value = config.TrashMinFreeGb ?? 50;
+                        page.querySelector("#TrashClearNasRecycle").checked = config.TrashClearNasRecycle !== false;
                         page.querySelector("#StallWarnSeconds").value = config.StallWarnSeconds ?? 60;
                         page.querySelector("#JoinSplitRecordings").checked = config.JoinSplitRecordings !== false;
                         page.querySelector("#JoinKeepPiecesDays").value = config.JoinKeepPiecesDays ?? 3;
@@ -606,7 +660,97 @@
                         Dashboard.hideLoadingMsg();
                     });
                     showStatus();
+                    showTrash();
                 });
+
+            function size(bytes) {
+                return bytes >= 1073741824 ? (bytes / 1073741824).toFixed(1) + " GB" : Math.max(1, Math.round(bytes / 1048576)) + " MB";
+            }
+
+            function showTrash() {
+                var list = document.querySelector("#TrashList");
+                get("EpisodeHistory/Trash").then(function (t) {
+                    document.querySelector("#TrashSummary").textContent = !t.Items.length
+                        ? (t.Enabled ? "Nothing in the trash." : "Nothing in the trash. The trash is off.")
+                        : t.Items.length + (t.Items.length === 1 ? " item, " : " items, ") + size(t.Bytes) + ".";
+                    document.querySelector("#TrashEmptyBtn").style.display = t.Items.length && t.CanEmpty ? "" : "none";
+                    list.innerHTML = "";
+                    t.Items.forEach(function (e) {
+                        var row = document.createElement("div");
+                        row.style.cssText = "display:flex;align-items:center;gap:1em;padding:0.5em 0;border-bottom:1px solid rgba(128,128,128,0.25);";
+                        var text = document.createElement("div");
+                        text.style.flex = "1";
+                        var title = document.createElement("div");
+                        title.textContent = e.Title + (e.Detail ? " · " + e.Detail : "");
+                        var sub = document.createElement("div");
+                        sub.className = "fieldDescription";
+                        sub.textContent = "Deleted " + when(e.DeletedUtc) + (e.DeletedBy ? " by " + e.DeletedBy : "")
+                            + " · " + size(e.Bytes) + (e.Place ? " · from " + e.Place : "")
+                            + " · deleted for good " + when(e.ExpiresUtc);
+                        text.appendChild(title);
+                        text.appendChild(sub);
+                        row.appendChild(text);
+                        var button = function (label, action) {
+                            var b = document.createElement("button");
+                            b.type = "button";
+                            b.setAttribute("is", "emby-button");
+                            b.className = "raised";
+                            b.textContent = label;
+                            b.addEventListener("click", action);
+                            row.appendChild(b);
+                            return b;
+                        };
+                        var out = document.querySelector("#TrashResult");
+                        if (t.CanRestore) {
+                            button("Restore", function () {
+                                post("EpisodeHistory/Trash/" + e.Id + "/Restore").then(function () {
+                                    out.textContent = "Put back: " + e.Title + ". The library picks it up in a minute or so.";
+                                    showTrash();
+                                }, function (err) {
+                                    out.textContent = "Couldn't put it back" + (err && err.status === 409 ? ": something is already where it was." : ".");
+                                });
+                            });
+                        }
+
+                        if (t.CanEmpty) {
+                            var armed = false;
+                            var del = button("Delete now", function () {
+                                if (!armed) {
+                                    armed = true;
+                                    del.textContent = "Press again";
+                                    setTimeout(function () { armed = false; del.textContent = "Delete now"; }, 4000);
+                                    return;
+                                }
+
+                                ApiClient.ajax({ type: "DELETE", url: ApiClient.getUrl("EpisodeHistory/Trash/" + e.Id) }).then(function () {
+                                    out.textContent = "Deleted for good: " + e.Title + ".";
+                                    showTrash();
+                                });
+                            });
+                        }
+
+                        list.appendChild(row);
+                    });
+                });
+            }
+
+            var emptyArmed = false;
+            document.querySelector("#TrashEmptyBtn").addEventListener("click", function () {
+                var b = this;
+                if (!emptyArmed) {
+                    emptyArmed = true;
+                    b.querySelector("span").textContent = "Press again to delete everything in the trash for good";
+                    setTimeout(function () { emptyArmed = false; b.querySelector("span").textContent = "Empty the trash now"; }, 4000);
+                    return;
+                }
+
+                emptyArmed = false;
+                b.querySelector("span").textContent = "Empty the trash now";
+                ApiClient.ajax({ type: "DELETE", url: ApiClient.getUrl("EpisodeHistory/Trash"), dataType: "json" }).then(function (r) {
+                    document.querySelector("#TrashResult").textContent = "Deleted " + r.Deleted + " for good.";
+                    showTrash();
+                });
+            });
 
             document.querySelector("#SweepBtn").addEventListener("click", function () {
                 var out = document.querySelector("#ActionResult");
@@ -707,6 +851,12 @@
                         config.MinRecordedPercent = parseInt(page.querySelector("#MinRecordedPercent").value, 10) || 0;
                         config.CountAllLibraries = page.querySelector("#CountAllLibraries").checked;
                         config.TidyDeletedRecordings = page.querySelector("#TidyDeletedRecordings").checked;
+                        config.TrashEnabled = page.querySelector("#TrashEnabled").checked;
+                        var keepDays = parseInt(page.querySelector("#TrashKeepDays").value, 10);
+                        config.TrashKeepDays = isNaN(keepDays) ? 2 : Math.min(365, Math.max(0, keepDays));
+                        var minFree = parseInt(page.querySelector("#TrashMinFreeGb").value, 10);
+                        config.TrashMinFreeGb = isNaN(minFree) ? 50 : Math.max(0, minFree);
+                        config.TrashClearNasRecycle = page.querySelector("#TrashClearNasRecycle").checked;
                         var stallSeconds = parseInt(page.querySelector("#StallWarnSeconds").value, 10);
                         config.StallWarnSeconds = isNaN(stallSeconds) ? 60 : Math.min(3600, Math.max(0, stallSeconds));
                         var num = function (id, fallback, min, max) {

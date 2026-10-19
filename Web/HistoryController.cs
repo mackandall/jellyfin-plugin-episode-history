@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data;
 using Jellyfin.Plugin.EpisodeHistory.Configuration;
 using Jellyfin.Plugin.EpisodeHistory.History;
 using Jellyfin.Plugin.EpisodeHistory.Services;
@@ -48,6 +49,7 @@ public sealed class HistoryController : ControllerBase
     private readonly Programmes _programmes;
     private readonly RecordingChannels _channels;
     private readonly Airings _airings;
+    private readonly Trash _trash;
     private readonly ILogger<HistoryController> _logger;
 
     public HistoryController(
@@ -69,8 +71,10 @@ public sealed class HistoryController : ControllerBase
         Programmes programmes,
         RecordingChannels channels,
         Airings airings,
+        Trash trash,
         ILogger<HistoryController> logger)
     {
+        _trash = trash;
         _airings = airings;
         _channels = channels;
         _ledger = ledger;
@@ -300,7 +304,7 @@ public sealed class HistoryController : ControllerBase
 
         if (deleteRecording)
         {
-            _libraryManager.DeleteItem(item, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = true }, true);
+            _trash.Delete(new[] { item }, _userManager.GetUserById(CurrentUserId())?.Username);
         }
 
         var matching = _store.LoadAll().Where(r => r.Identity.SameEpisode(identity)).ToList();
@@ -387,18 +391,15 @@ public sealed class HistoryController : ControllerBase
             targets.AddRange(Versions(item).Where(v => !v.Id.Equals(item.Id) && _recordings.IsPartial(v, inHistory)));
         }
 
+        Trash.Entry? trashed = null;
         if (!dryRun)
         {
-            // Alternates first: deleting a primary would promote one of them to take its place.
-            foreach (var v in targets.OrderBy(v => v.PrimaryVersionId.HasValue ? 0 : 1))
-            {
-                _libraryManager.DeleteItem(v, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = true }, true);
-            }
-
+            // One trash entry for the lot (alternates go first there, as they must).
+            trashed = _trash.Delete(targets, user.Username);
             _sweeper.Request("deleted recording", TimeSpan.FromSeconds(1));
         }
 
-        return Ok(new { Partial = partial, Deleted = dryRun ? 0 : targets.Count, Files = targets.Select(v => System.IO.Path.GetFileName(v.Path)).ToList() });
+        return Ok(new { Partial = partial, Deleted = dryRun ? 0 : targets.Count, Files = targets.Select(v => System.IO.Path.GetFileName(v.Path)).ToList(), Trashed = trashed is not null, TrashDays = Trash.Enabled ? Plugin.Instance?.Configuration.TrashKeepDays : null });
     }
 
     /// <summary>
@@ -443,20 +444,37 @@ public sealed class HistoryController : ControllerBase
         var deleted = 0;
         if (!dryRun)
         {
-            // Alternates first: deleting a primary would promote one of them to take its place.
-            foreach (var v in targets.OrderBy(v => v.PrimaryVersionId.HasValue ? 0 : 1))
+            if (Trash.Enabled)
             {
+                // The whole lot as one trash entry, so it comes back in one go.
                 try
                 {
-                    var path = v.Path;
-                    _libraryManager.DeleteItem(v, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = true }, true);
-                    deleted++;
-                    RecordingTidy.DeleteSideFiles(path, _logger);
+                    deleted = _trash.Delete(targets, user.Username)?.Videos ?? 0;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Couldn't delete recording {Path}", v.Path);
-                    skipped++;
+                    _logger.LogWarning(ex, "Couldn't move all of series {SeriesId} to the trash", seriesId);
+                }
+
+                skipped += targets.Count - deleted;
+            }
+            else
+            {
+                // Alternates first: deleting a primary would promote one of them to take its place.
+                foreach (var v in targets.OrderBy(v => v.PrimaryVersionId.HasValue ? 0 : 1))
+                {
+                    try
+                    {
+                        var path = v.Path;
+                        _libraryManager.DeleteItem(v, new MediaBrowser.Controller.Library.DeleteOptions { DeleteFileLocation = true }, true);
+                        deleted++;
+                        RecordingTidy.DeleteSideFiles(path, _logger);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Couldn't delete recording {Path}", v.Path);
+                        skipped++;
+                    }
                 }
             }
 
@@ -485,8 +503,81 @@ public sealed class HistoryController : ControllerBase
             _sweeper.Request("deleted recordings", TimeSpan.FromSeconds(1));
         }
 
-        return Ok(new { Count = targets.Count, Bytes = bytes, Skipped = skipped, Deleted = deleted, Places = Places(targets) });
+        return Ok(new { Count = targets.Count, Bytes = bytes, Skipped = skipped, Deleted = deleted, Places = Places(targets), Trashed = Trash.Enabled && deleted > 0, TrashDays = Trash.Enabled ? Plugin.Instance?.Configuration.TrashKeepDays : null });
     }
+
+    // ---- Trash ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// What is in the trash, newest first, with when each goes for good. CanEmpty: the caller may
+    /// delete from it for good (administrators); everyone who may delete may put things back.
+    /// </summary>
+    [HttpGet("Trash")]
+    [Authorize]
+    public IActionResult TrashList()
+    {
+        var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        var user = _userManager.GetUserById(CurrentUserId());
+        var items = _trash.All();
+        return Ok(new
+        {
+            Enabled = cfg.TrashEnabled,
+            KeepDays = cfg.TrashKeepDays,
+            MinFreeGb = cfg.TrashMinFreeGb,
+            CanRestore = CanUseTrash(user),
+            CanEmpty = User.IsInRole("Administrator"),
+            Bytes = items.Sum(e => e.Bytes),
+            Items = items.Select(e => new
+            {
+                e.Id,
+                e.Title,
+                e.Show,
+                e.Detail,
+                e.Kind,
+                e.Videos,
+                e.Bytes,
+                e.DeletedUtc,
+                ExpiresUtc = Trash.ExpiresUtc(e),
+                e.DeletedBy,
+                e.Place
+            })
+        });
+    }
+
+    /// <summary>Puts a deleted recording (or show) back where it was; the library picks it up again.</summary>
+    [HttpPost("Trash/{id}/Restore")]
+    [Authorize]
+    public IActionResult TrashRestore([FromRoute] string id)
+    {
+        if (!CanUseTrash(_userManager.GetUserById(CurrentUserId())))
+        {
+            return Forbid();
+        }
+
+        var problem = _trash.Restore(id);
+        if (problem is null)
+        {
+            _sweeper.Request("restored from trash", TimeSpan.FromSeconds(30));
+            return Ok(new { Restored = true });
+        }
+
+        return Conflict(new { Message = problem });
+    }
+
+    /// <summary>Deletes one entry of the trash for good, now.</summary>
+    [HttpDelete("Trash/{id}")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public IActionResult TrashPurge([FromRoute] string id) =>
+        _trash.Purge(id, "deleted from the trash") ? Ok(new { Deleted = 1 }) : NotFound();
+
+    /// <summary>Empties the trash, for good.</summary>
+    [HttpDelete("Trash")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    public IActionResult TrashEmpty() => Ok(new { Deleted = _trash.PurgeAll() });
+
+    private static bool CanUseTrash(Jellyfin.Database.Implementations.Entities.User? user) =>
+        user is not null && (user.HasPermission(Jellyfin.Database.Implementations.Enums.PermissionKind.IsAdministrator)
+            || user.HasPermission(Jellyfin.Database.Implementations.Enums.PermissionKind.EnableContentDeletion));
 
     /// <summary>Where files are, for a confirmation: the folder under /mnt (or the like) each is in.</summary>
     private static List<string> Places(IEnumerable<Video> files) =>
