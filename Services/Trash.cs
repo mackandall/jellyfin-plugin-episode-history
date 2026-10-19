@@ -66,6 +66,12 @@ public sealed class Trash : IHostedService, IDisposable
         public string To { get; set; } = string.Empty;
 
         public bool IsFolder { get; set; }
+
+        /// <summary>
+        /// A show's or season's folder holding only artwork and .nfo files: put back into the folder
+        /// if it's there again (a new recording), never over what is in it.
+        /// </summary>
+        public bool Artwork { get; set; }
     }
 
     /// <summary>One delete: a recording, or several deleted together (a whole show, a partial's pieces).</summary>
@@ -231,7 +237,8 @@ public sealed class Trash : IHostedService, IDisposable
         }
 
         // A show or season deleted as a whole leaves the library with its videos; its folder, if
-        // nothing but artwork is left in it, goes too (the trash is outside it).
+        // nothing but artwork is left in it, goes to the trash too, so a restore brings back the
+        // show's poster and .nfo files with the episodes.
         foreach (var c in containers)
         {
             try
@@ -242,9 +249,23 @@ public sealed class Trash : IHostedService, IDisposable
                     _libraryManager.DeleteItem(current, new DeleteOptions { DeleteFileLocation = false }, true);
                 }
 
-                if (!string.IsNullOrEmpty(dir))
+                if (!string.IsNullOrEmpty(dir) && RecordingTidy.OnlyArtworkLeft(dir, roots))
                 {
-                    RecordingTidy.RemoveIfNoVideos(dir, roots, _logger);
+                    var folder = Path.Combine(TrashFolderFor(dir, roots), entry.Id);
+                    var to = Path.Combine(folder, Path.GetFileName(Path.TrimEndingDirectorySeparator(dir)));
+                    if (!Directory.Exists(to) && !File.Exists(to))
+                    {
+                        Directory.CreateDirectory(folder);
+                        if (!entry.Folders.Contains(folder))
+                        {
+                            entry.Folders.Add(folder);
+                        }
+
+                        var bytes = FolderSize(dir);
+                        Directory.Move(dir, to);
+                        entry.Files.Add(new Moved { From = dir, To = to, IsFolder = true, Artwork = true });
+                        entry.Bytes += bytes;
+                    }
                 }
             }
             catch (Exception ex)
@@ -273,19 +294,25 @@ public sealed class Trash : IHostedService, IDisposable
             return "It isn't in the trash any more.";
         }
 
-        var clash = entry.Files.FirstOrDefault(f => File.Exists(f.From) || Directory.Exists(f.From));
+        var clash = entry.Files.FirstOrDefault(f => File.Exists(f.From) || (Directory.Exists(f.From) && !f.Artwork));
         if (clash is not null)
         {
             return $"Something is already at {clash.From}.";
         }
 
         var back = entry.Files.Where(f => f.IsFolder || IsVideo(f.From)).Select(f => f.From).ToList();
-        foreach (var f in entry.Files.ToList())
+
+        // Folders first, outermost first: a show's folder goes back before the episodes go into it.
+        foreach (var f in entry.Files.OrderByDescending(f => f.IsFolder).ThenBy(f => f.From.Length).ToList())
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(f.From)!);
-                if (f.IsFolder)
+                if (f.Artwork && Directory.Exists(f.From))
+                {
+                    MergeBack(f.To, f.From);
+                }
+                else if (f.IsFolder)
                 {
                     Directory.Move(f.To, f.From);
                 }
@@ -585,6 +612,20 @@ public sealed class Trash : IHostedService, IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Couldn't delete {Path}", path);
+        }
+    }
+
+    /// <summary>Moves what is in <paramref name="from"/> into <paramref name="to"/>, skipping files already there.</summary>
+    private static void MergeBack(string from, string to)
+    {
+        foreach (var file in Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories).ToList())
+        {
+            var target = Path.Combine(to, Path.GetRelativePath(from, file));
+            if (!File.Exists(target) && !Directory.Exists(target))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Move(file, target);
+            }
         }
     }
 

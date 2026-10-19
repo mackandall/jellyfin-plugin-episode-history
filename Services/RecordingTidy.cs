@@ -60,17 +60,22 @@ internal static class RecordingTidy
     /// empty season folders); true when it went. Never one of <paramref name="roots"/> itself
     /// (each with a trailing separator), nor a folder outside them.
     /// </summary>
+    /// <summary>
+    /// True when <paramref name="dir"/> is a folder inside a library folder (not one itself) with
+    /// nothing in it, at any depth, but artwork and metadata.
+    /// </summary>
+    public static bool OnlyArtworkLeft(string dir, IReadOnlyList<string> roots)
+    {
+        var trimmed = Path.TrimEndingDirectorySeparator(dir) + Path.DirectorySeparatorChar;
+        return Directory.Exists(dir) && !roots.Contains(trimmed) && roots.Any(r => trimmed.StartsWith(r, StringComparison.Ordinal))
+            && !Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any(f => !IsSide(f));
+    }
+
     public static bool RemoveIfNoVideos(string dir, IReadOnlyList<string> roots, ILogger logger)
     {
         try
         {
-            var trimmed = Path.TrimEndingDirectorySeparator(dir) + Path.DirectorySeparatorChar;
-            if (!Directory.Exists(dir) || roots.Contains(trimmed) || !roots.Any(r => trimmed.StartsWith(r, StringComparison.Ordinal)))
-            {
-                return false;
-            }
-
-            if (!Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any(f => !IsSide(f)))
+            if (OnlyArtworkLeft(dir, roots))
             {
                 Directory.Delete(dir, true);
                 logger.LogInformation("Removed the emptied folder {Folder}", dir);

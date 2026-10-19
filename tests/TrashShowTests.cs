@@ -144,6 +144,63 @@ public sealed class TrashShowTests : IDisposable
     }
 
     [Fact]
+    public void WholeShow_ArtworkGoesToTheTrashToo()
+    {
+        var (show, _, _, _) = TwoSeasons();
+
+        var entry = NewTrash().Delete(new BaseItem[] { show }, null)!;
+
+        var moved = Path.Combine(_library, Trash.FolderName, entry.Id, "Show");
+        Assert.True(File.Exists(Path.Combine(moved, "tvshow.nfo")));
+        Assert.True(File.Exists(Path.Combine(moved, "poster.jpg")));
+        Assert.True(File.Exists(Path.Combine(moved, "Season 1", "season.nfo")));
+    }
+
+    [Fact]
+    public void RestoringAShow_BringsBackItsArtwork()
+    {
+        var (show, _, _, episodes) = TwoSeasons();
+        var entry = NewTrash().Delete(new BaseItem[] { show }, null)!;
+
+        Assert.Null(NewTrash().Restore(entry.Id));
+
+        Assert.True(File.Exists(Path.Combine(_library, "Show", "tvshow.nfo")));
+        Assert.True(File.Exists(Path.Combine(_library, "Show", "poster.jpg")));
+        Assert.True(File.Exists(Path.Combine(_library, "Show", "Season 1", "season.nfo")));
+        Assert.All(episodes, e => Assert.True(File.Exists(e.Path), e.Path));
+        Assert.False(Directory.Exists(Path.Combine(_library, Trash.FolderName)));
+    }
+
+    [Fact]
+    public void RestoringAShow_AfterANewRecording_MergesAndKeepsTheNewFiles()
+    {
+        var (show, _, _, episodes) = TwoSeasons();
+        var entry = NewTrash().Delete(new BaseItem[] { show }, null)!;
+        var recorded = Touch("Show/Season 3/Show S03E01.ts");
+        File.WriteAllText(Path.Combine(_library, "Show", "poster.jpg"), "new poster");
+
+        Assert.Null(NewTrash().Restore(entry.Id));
+
+        Assert.True(File.Exists(recorded));
+        Assert.Equal("new poster", File.ReadAllText(Path.Combine(_library, "Show", "poster.jpg")));
+        Assert.True(File.Exists(Path.Combine(_library, "Show", "tvshow.nfo")));
+        Assert.All(episodes, e => Assert.True(File.Exists(e.Path), e.Path));
+        Assert.Empty(NewTrash().All());
+        Assert.False(Directory.Exists(Path.Combine(_library, Trash.FolderName)));
+    }
+
+    [Fact]
+    public void RestoringASeason_BringsBackItsArtwork()
+    {
+        var (_, season1, _, _) = TwoSeasons();
+        var entry = NewTrash().Delete(new BaseItem[] { season1 }, null)!;
+
+        Assert.Null(NewTrash().Restore(entry.Id));
+
+        Assert.True(File.Exists(Path.Combine(_library, "Show", "Season 1", "season.nfo")));
+    }
+
+    [Fact]
     public void WholeShow_FolderWithSomethingElseInIt_Stays()
     {
         var (show, _, _, _) = TwoSeasons();
