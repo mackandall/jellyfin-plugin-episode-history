@@ -361,6 +361,15 @@
                         <div class="fieldDescription">The channel's logo and number, from Live TV. Recordings made before this version, or not by the DVR, show without one.</div>
                     </div>
 
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="RecordingsCardMenu">The "&#8942;" menu on recordings</label>
+                        <select id="RecordingsCardMenu" is="emby-select">
+                            <option value="own">Always the short recordings menu</option>
+                            <option value="jellyfin">Jellyfin's full menu when it can</option>
+                        </select>
+                        <div class="fieldDescription">The short menu is the same every time: Play, Open, watched, delete, and the other JellyDVR plugins' entries (Move to archive, Scan for commercials…). Jellyfin's full menu adds editing and collections, but Jellyfin only has it ready on this page after another page was opened in the same tab, so otherwise the short menu shows. Either way, Open and the "&#8942;" on the recording's own page give Jellyfin's full menu.</div>
+                    </div>
+
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
                             <input id="ShowPageRecordingsEnabled" type="checkbox" is="emby-checkbox" />
@@ -656,6 +665,7 @@
                         page.querySelector("#RecordingsTabLimit").value = config.RecordingsTabLimit;
                         page.querySelector("#RecordingsTabView").value = config.RecordingsTabView || "cards";
                         page.querySelector("#RecordingsDateLogo").value = config.RecordingsDateLogo || "left";
+                        page.querySelector("#RecordingsCardMenu").value = config.RecordingsCardMenu || "own";
                         page.querySelector("#ShowPageRecordingsEnabled").checked = config.ShowPageRecordingsEnabled;
                         Dashboard.hideLoadingMsg();
                     });
@@ -898,6 +908,7 @@
                         config.RecordingsTabLimit = parseInt(page.querySelector("#RecordingsTabLimit").value, 10) || 200;
                         config.RecordingsTabView = page.querySelector("#RecordingsTabView").value;
                         config.RecordingsDateLogo = page.querySelector("#RecordingsDateLogo").value;
+                        config.RecordingsCardMenu = page.querySelector("#RecordingsCardMenu").value;
                         config.ShowPageRecordingsEnabled = page.querySelector("#ShowPageRecordingsEnabled").checked;
                         ApiClient.updatePluginConfiguration(pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);

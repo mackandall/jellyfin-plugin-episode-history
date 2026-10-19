@@ -221,6 +221,14 @@ public class PluginConfiguration : BasePluginConfiguration
     public string RecordingsDateLogo { get; set; } = "left";
 
     /// <summary>
+    /// The "..." menu on Live TV > Recordings cards: "own" (always this plugin's menu, with the
+    /// other JellyDVR plugins' entries in it) or "jellyfin" (Jellyfin's full menu whenever the
+    /// page has it loaded, which depends on what was opened before in that tab; this plugin's
+    /// menu otherwise).
+    /// </summary>
+    public string RecordingsCardMenu { get; set; } = "own";
+
+    /// <summary>
     /// Show a "Recordings" row on a show's page (above Next Up) listing that show's DVR
     /// recordings, newest first, archived ones included.
     /// </summary>

@@ -1027,11 +1027,29 @@
     }
   }
 
+  /** One look for our entries and the ones other plugins add, whatever Jellyfin's theme. */
+  function menuStyle() {
+    if (document.getElementById(MENU_ID + 'Style')) {
+      return;
+    }
+    var style = document.createElement('style');
+    style.id = MENU_ID + 'Style';
+    style.textContent = '#' + MENU_ID + ' .actionSheetMenuItem{display:flex;align-items:center;gap:.8em;width:100%;margin:0;padding:.7em 1em;min-height:0;'
+      + 'background:none;border:0;color:#fff;font-size:1em;cursor:pointer;text-align:left;}'
+      + '#' + MENU_ID + ' .actionSheetMenuItem:hover,#' + MENU_ID + ' .actionSheetMenuItem:focus{background:rgba(255,255,255,.1);}'
+      + '#' + MENU_ID + ' .actionSheetMenuItem:disabled{opacity:.5;cursor:default;}'
+      // Jellyfin's sheet rules are more specific (and the icon's margin is set for its layout).
+      + '#' + MENU_ID + ' .listItemBody{padding:0 !important;flex:1;min-width:0;}'
+      + '#' + MENU_ID + ' .listItemBodyText{white-space:normal !important;overflow:visible !important;}'
+      + '#' + MENU_ID + ' .listItemIcon{margin:0 !important;padding:0 !important;background:none;color:inherit;font-size:1.36em;width:auto;}';
+    document.head.appendChild(style);
+  }
+
   function menuItem(icon, label, onClick) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'listItem listItem-button actionSheetMenuItem emby-button';
-    b.style.cssText = 'display:flex;align-items:center;gap:.8em;width:100%;padding:.7em 1em;background:none;border:0;color:inherit;font-size:1em;cursor:pointer;text-align:left;';
+    b.setAttribute('data-eh-own', '');
     b.innerHTML = '<span class="material-icons ' + icon + '" aria-hidden="true"></span><span class="eh-menu-text"></span>';
     b.querySelector('.eh-menu-text').textContent = label;
     b.addEventListener('click', onClick);
@@ -1040,6 +1058,7 @@
 
   function openMenu(card, anchor) {
     closeMenu();
+    menuStyle();
     var id = card.getAttribute('data-id');
     var type = card.getAttribute('data-type');
     var played = (card.querySelector('[is="emby-playstatebutton"]') || card).getAttribute('data-played') === 'true';
@@ -1052,13 +1071,26 @@
     overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;';
     var box = el('div');
     box.style.cssText = 'position:fixed;min-width:15em;max-width:22em;background:#252525;color:#fff;border-radius:.4em;box-shadow:0 .3em 1.5em rgba(0,0,0,.6);padding:.3em 0;';
+    // An .actionSheetScroller, as in Jellyfin's own menu: the other JellyDVR plugins watch for one
+    // and add their entries (Move to archive, Scan for commercials…) for the card just clicked.
+    var list = el('div');
+    list.className = 'actionSheetScroller';
+    box.appendChild(list);
     var title = el('div', null, name + (sub && single ? ' · ' + sub : ''));
     title.style.cssText = 'padding:.5em 1em;opacity:.7;font-size:.9em;border-bottom:1px solid rgba(255,255,255,.1);';
-    box.appendChild(title);
+    list.appendChild(title);
+    // Their entries close the menu as Jellyfin's would; ours close it themselves (or stay open
+    // for a second press).
+    list.addEventListener('click', function (e) {
+      var b = e.target.closest('button');
+      if (b && !b.hasAttribute('data-eh-own')) {
+        setTimeout(closeMenu, 0);
+      }
+    });
 
-    box.appendChild(menuItem('play_arrow', 'Play', function () { closeMenu(); playItem(id); }));
-    box.appendChild(menuItem('info', 'Open', function () { closeMenu(); window.location.hash = '#/details?id=' + id; }));
-    box.appendChild(menuItem(played ? 'remove_done' : 'done', played ? 'Mark as unwatched' : 'Mark as watched', function () {
+    list.appendChild(menuItem('play_arrow', 'Play', function () { closeMenu(); playItem(id); }));
+    list.appendChild(menuItem('info', 'Open', function () { closeMenu(); window.location.hash = '#/details?id=' + id; }));
+    list.appendChild(menuItem(played ? 'remove_done' : 'done', played ? 'Mark as unwatched' : 'Mark as watched', function () {
       closeMenu();
       setPlayed(card, !played);
     }));
@@ -1068,25 +1100,25 @@
       if (box.isConnected) {
         var stop = menuItem('stop_circle', label, function () { closeMenu(); onClick(); });
         // Right under the title: it is the entry a recording in progress is opened for.
-        box.insertBefore(stop, title.nextSibling);
+        list.insertBefore(stop, title.nextSibling);
       }
     }, function () {
       var chip = card.querySelector('.episodeHistoryRecordingChip');
       chip && chip.parentNode.removeChild(chip);
     });
     if (single) {
-      var stateAfter = box.lastChild;
+      var stateAfter = list.lastChild;
       recordingStateEntries(id, function (icon, label, onClick) {
         if (box.isConnected) {
           var entry = menuItem(icon, label, function () { closeMenu(); onClick(); });
-          box.insertBefore(entry, stateAfter.nextSibling);
+          list.insertBefore(entry, stateAfter.nextSibling);
           stateAfter = entry;
         }
       }, function (text) {
         if (box.isConnected) {
           var why = el('div', null, text);
           why.style.cssText = 'padding:.5em 1em;font-size:.85em;line-height:1.35;color:#ffab91;border-bottom:1px solid rgba(255,255,255,.1);';
-          box.insertBefore(why, title.nextSibling);
+          list.insertBefore(why, title.nextSibling);
         }
       }, function () {
         var chip = card.querySelector('.episodeHistoryPartialChip');
@@ -1094,14 +1126,14 @@
       });
       rerecordEntries(id, function (icon, label, onClick) {
         if (box.isConnected) {
-          box.appendChild(menuItem(icon, label, function () { closeMenu(); onClick(); }));
+          list.appendChild(menuItem(icon, label, function () { closeMenu(); onClick(); }));
         }
       });
     }
     if (!single) {
       showDeleteEntry(id, name, function (label, onClick) {
         if (box.isConnected) {
-          box.appendChild(menuItem('delete_sweep', label, function () { closeMenu(); onClick(); }));
+          list.appendChild(menuItem('delete_sweep', label, function () { closeMenu(); onClick(); }));
         }
       }, function () {
         card.parentNode && card.parentNode.removeChild(card);
@@ -1137,7 +1169,7 @@
           text.textContent = 'Could not delete it';
         });
       });
-      box.appendChild(del);
+      list.appendChild(del);
     });
 
     overlay.appendChild(box);
@@ -1147,11 +1179,18 @@
       }
     });
     document.body.appendChild(overlay);
+    // Below the button, or above it in the lower half of the screen; it scrolls if the
+    // entries added afterwards make it taller than the room there.
     var r = anchor.getBoundingClientRect();
-    var left = Math.min(r.left, window.innerWidth - 260);
-    var top = r.bottom + 4;
-    box.style.left = Math.max(8, left) + 'px';
-    box.style.top = Math.max(8, Math.min(top, window.innerHeight - 260)) + 'px';
+    box.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 260)) + 'px';
+    box.style.overflowY = 'auto';
+    if (r.bottom > window.innerHeight / 2) {
+      box.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+      box.style.maxHeight = (r.top - 12) + 'px';
+    } else {
+      box.style.top = (r.bottom + 4) + 'px';
+      box.style.maxHeight = (window.innerHeight - r.bottom - 12) + 'px';
+    }
     document.addEventListener('keydown', onMenuKey, true);
     var first = box.querySelector('button');
     if (first) {
@@ -1612,7 +1651,9 @@
   function injectIntoSheet(scroller) {
     var id = sheetTargetId();
     var client = window.ApiClient;
-    if (!id || !client) {
+    // Our own card menu has these entries already (it only borrows the sheet's class name so
+    // the other plugins add theirs).
+    if (!id || !client || scroller.closest('#' + MENU_ID)) {
       return;
     }
     function sheetEntry(dataId, icon, label, onClick) {
@@ -1695,12 +1736,15 @@
     }
     var container = button.closest('.episodeHistoryRecordingsItems');
     var card = button.closest('.card');
-    if (!card || handledByJellyfin(container)) {
+    var action = button.getAttribute('data-action');
+    // Where Jellyfin handles the cards, it keeps play and watched; the "..." menu is ours unless
+    // the server is set to Jellyfin's.
+    var ours = action === 'menu' && ((settings && settings.CardMenu) || 'own') === 'own';
+    if (!card || (handledByJellyfin(container) && !ours)) {
       return;
     }
     e.preventDefault();
     e.stopPropagation();
-    var action = button.getAttribute('data-action');
     if (action === 'menu') {
       openMenu(card, button);
     } else if (action === 'resume') {

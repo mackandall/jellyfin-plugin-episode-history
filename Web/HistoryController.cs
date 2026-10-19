@@ -1011,7 +1011,8 @@ public sealed class HistoryController : ControllerBase
             TabMode = cfg.RecordingsTabMode,
             TabLimit = cfg.RecordingsTabLimit,
             TabView = cfg.RecordingsTabView,
-            DateLogo = cfg.RecordingsDateLogo
+            DateLogo = cfg.RecordingsDateLogo,
+            CardMenu = cfg.RecordingsCardMenu
         };
 
         var cards = _recordings.Cards(user, filter, cfg.RecordingsRowGroupByShow, cfg.RecordingsRowIncludeMovies, limit ?? cfg.RecordingsRowLimit);
