@@ -119,6 +119,47 @@ public sealed class TrashTests : IDisposable
     }
 
     [Fact]
+    public void ConvertedMovieAloneInItsFolder_TheFolderGoesWithItsHiddenOriginals()
+    {
+        // Land of the Lost: the converter's hidden original was taken for a second movie, so only the
+        // new copy went and the 19.8 GB original stayed behind.
+        var movie = Touch("Heat (1995)/Heat (1995).ts");
+        Touch("Heat (1995)/.Heat (1995).h264-original.ts");
+        Touch("Heat (1995)/.Heat (1995).original.ts");
+
+        var entry = NewTrash().Delete(new[] { MovieAt(movie) }, null);
+
+        Assert.False(Directory.Exists(Path.Combine(_library, "Heat (1995)")));
+        Assert.True(Assert.Single(entry!.Files).IsFolder);
+        var moved = Path.Combine(TrashRoot, entry.Id, "Heat (1995)");
+        Assert.True(File.Exists(Path.Combine(moved, ".Heat (1995).h264-original.ts")));
+        Assert.True(File.Exists(Path.Combine(moved, ".Heat (1995).original.ts")));
+    }
+
+    [Fact]
+    public void ConvertedMovieBesideAnother_ItsOriginalGoesAndTheOthersStays()
+    {
+        var movie = Touch("Heat (1995).ts");
+        var original = Touch(".Heat (1995).h264-original.ts");
+        var other = Touch("Ronin (1998).ts");
+        var otherOriginal = Touch(".Ronin (1998).h264-original.ts");
+        var lookalike = Touch(".Heat (1995).h264-original.mkv");
+
+        var trash = NewTrash();
+        var entry = trash.Delete(new[] { MovieAt(movie) }, null);
+
+        Assert.False(File.Exists(movie));
+        Assert.False(File.Exists(original));
+        Assert.True(File.Exists(other));
+        Assert.True(File.Exists(otherOriginal));
+        Assert.True(File.Exists(lookalike));
+
+        Assert.Null(trash.Restore(entry!.Id));
+        Assert.True(File.Exists(movie));
+        Assert.True(File.Exists(original));
+    }
+
+    [Fact]
     public void OnlyVideoInTheLibraryFolder_TheLibraryFolderStays()
     {
         var movie = Touch("Lonely (2010).ts");

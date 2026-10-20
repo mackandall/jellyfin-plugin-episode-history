@@ -473,13 +473,13 @@ public sealed class Trash : IHostedService, IDisposable
 
     /// <summary>
     /// A movie alone in its own folder: the folder (artwork and all). Anything else: the video and
-    /// the files named after it (.nfo, -thumb.jpg, .edl, .ts.properties…).
+    /// the files named after it (.nfo, -thumb.jpg, .edl, .ts.properties…) and its hidden originals.
     /// </summary>
     private IEnumerable<(string Path, bool IsFolder)> WhatGoes(Video v, string path)
     {
         var dir = Path.GetDirectoryName(path)!;
         if (v is Movie && !v.IsInMixedFolder && !LibraryRoots().Contains(Path.TrimEndingDirectorySeparator(dir) + Path.DirectorySeparatorChar)
-            && !Directory.EnumerateFiles(dir).Any(f => f != path && IsVideo(f))
+            && !Directory.EnumerateFiles(dir).Any(f => f != path && IsVideo(f) && !IsOriginalOf(f, path))
             && !Directory.EnumerateDirectories(dir).Any())
         {
             return new[] { (dir, true) };
@@ -491,6 +491,12 @@ public sealed class Trash : IHostedService, IDisposable
         foreach (var f in Directory.EnumerateFiles(dir))
         {
             var fn = Path.GetFileName(f);
+            if (IsOriginalOf(f, path))
+            {
+                list.Add((f, false));
+                continue;
+            }
+
             if (f == path || IsVideo(f))
             {
                 continue;
@@ -506,6 +512,20 @@ public sealed class Trash : IHostedService, IDisposable
 
         return list;
     }
+
+    /// <summary>
+    /// The copy kept hidden beside a video for Undo: JellyDVR Space's Convert to HEVC
+    /// (".Heat.h264-original.ts") or the Comskip plugin's cut to the programme start (".Heat.original.ts").
+    /// </summary>
+    private static bool IsOriginalOf(string f, string video)
+    {
+        var fn = Path.GetFileName(f);
+        var stem = Path.GetFileNameWithoutExtension(video);
+        var ext = Path.GetExtension(video);
+        return OriginalSuffixes.Any(s => string.Equals(fn, "." + stem + s + ext, StringComparison.Ordinal));
+    }
+
+    private static readonly string[] OriginalSuffixes = { ".h264-original", ".original" };
 
     private static bool IsVideo(string f) => VideoExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase);
 
