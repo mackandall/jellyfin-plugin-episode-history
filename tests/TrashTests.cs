@@ -160,6 +160,27 @@ public sealed class TrashTests : IDisposable
     }
 
     [Fact]
+    public void CutRecording_TheEdlKeptWithItsOriginalGoesToo()
+    {
+        var movie = Touch("Heat (1995).ts");
+        var original = Touch(".Heat (1995).original.ts");
+        var edl = Touch(".Heat (1995).original.edl");
+        var otherEdl = Touch(".Ronin (1998).original.edl");
+        Touch("Ronin (1998).ts");
+
+        var trash = NewTrash();
+        var entry = trash.Delete(new[] { MovieAt(movie) }, null);
+
+        Assert.False(File.Exists(original));
+        Assert.False(File.Exists(edl));
+        Assert.True(File.Exists(otherEdl));
+
+        Assert.Null(trash.Restore(entry!.Id));
+        Assert.True(File.Exists(original));
+        Assert.True(File.Exists(edl));
+    }
+
+    [Fact]
     public void OnlyVideoInTheLibraryFolder_TheLibraryFolderStays()
     {
         var movie = Touch("Lonely (2010).ts");

@@ -515,14 +515,16 @@ public sealed class Trash : IHostedService, IDisposable
 
     /// <summary>
     /// The copy kept hidden beside a video for Undo: JellyDVR Space's Convert to HEVC
-    /// (".Heat.h264-original.ts") or the Comskip plugin's cut to the programme start (".Heat.original.ts").
+    /// (".Heat.h264-original.ts") or the Comskip plugin's cut to the programme start (".Heat.original.ts"),
+    /// and the .edl the Comskip plugin's commercial cut keeps with it (".Heat.original.edl").
     /// </summary>
     private static bool IsOriginalOf(string f, string video)
     {
         var fn = Path.GetFileName(f);
         var stem = Path.GetFileNameWithoutExtension(video);
         var ext = Path.GetExtension(video);
-        return OriginalSuffixes.Any(s => string.Equals(fn, "." + stem + s + ext, StringComparison.Ordinal));
+        return OriginalSuffixes.Any(s => string.Equals(fn, "." + stem + s + ext, StringComparison.Ordinal)
+            || string.Equals(fn, "." + stem + s + ".edl", StringComparison.Ordinal));
     }
 
     private static readonly string[] OriginalSuffixes = { ".h264-original", ".original" };
