@@ -69,19 +69,35 @@ installed match by name only. Recordings made after it store the id from their t
 - Changing a mark symbol is safe: the plugin remembers every symbol it has used and
   removes old marks before adding new ones.
 
-## Build and install
+## Install
+
+### From the JellyDVR plugin repository (no build needed)
+
+1. Dashboard → Plugins → **Repositories** → add (one list for all the JellyDVR plugins):
+   ```
+   https://raw.githubusercontent.com/mackandall/jdvr-client/main/plugins/manifest.json
+   ```
+2. Dashboard → Plugins → **Catalog** → **Episode History** → Install, then restart Jellyfin.
+
+### Or build from source
 
 ```bash
 dotnet build -c Release
 sudo ./install.sh   # copies DLL + meta.json + icon.png into the plugin dir, restarts Jellyfin
 ```
 
-For the "Mark as watched" button in jellyfin-web's guide, also patch the web client once
-(and again after every jellyfin-web package upgrade, which overwrites the patch):
+### Guide buttons in the web client (optional)
 
-```bash
-sudo ./install-web.sh   # adds one <script> line to /usr/share/jellyfin/web/index.html
+For the "Mark as watched" button in jellyfin-web's guide, jellyfin-web has to load one script.
+Its `index.html` belongs to root, so it's a command run once with sudo, and again after every
+jellyfin-web upgrade (which overwrites it):
+
 ```
+curl -fsSLO https://raw.githubusercontent.com/mackandall/jellyfin-plugin-episode-history/main/install-web.sh
+sudo bash install-web.sh
+```
+
+(From a clone, `sudo ./install-web.sh` does the same.)
 
 Clicking a guide program then shows **Mark as watched** / **Mark as unwatched** under
 the Record buttons. Admins also get **Forget this episode** when the history knows
