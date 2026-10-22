@@ -144,3 +144,10 @@ backup**:
   episode that entry airs as watched by the caller (for something seen elsewhere). Every
   airing of that episode then gets the watched mark. The Wholphin fork's guide dialog
   offers this as "Mark as watched".
+
+## License
+
+GPL-2.0-or-later: you can redistribute and change it under the terms of the GNU General Public
+License, version 2 or (at your option) any later version. See [LICENSE](LICENSE).
+
+The official source and releases are at <https://github.com/mackandall/jellyfin-plugin-episode-history>.
