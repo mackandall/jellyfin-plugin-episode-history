@@ -69,6 +69,44 @@ installed match by name only. Recordings made after it store the id from their t
 - Changing a mark symbol is safe: the plugin remembers every symbol it has used and
   removes old marks before adding new ones.
 
+## Screenshots
+
+From a real server (Jellyfin 12.2, web client).
+
+The guide with marks: 💾 in front of episodes already in the library (here also coloured with the custom CSS
+from [Styling marks in the web guide](#styling-marks-in-the-web-guide)):
+
+![Guide marks](docs/screenshots/guide-marks.jpg)
+
+The recordings row on the home screen, with All / Current / Archived. Cards show a recording in progress, how
+many recordings a show has, incomplete recordings, and an archived movie:
+
+![Recordings row](docs/screenshots/recordings-row.jpg)
+
+A show's menu on the row: Delete all its recordings (to the trash), alongside the other JellyDVR plugins' items:
+
+![A show's menu](docs/screenshots/menu-show.jpg)
+
+A recording's menu, here an archived movie: Re-record… and Other airings…:
+
+![An archived recording's menu](docs/screenshots/menu-archived.jpg)
+
+Settings (Dashboard → Plugins → Episode History): guide marks,
+
+![Guide mark settings](docs/screenshots/settings-guide-marks.jpg)
+
+split and incomplete recordings,
+
+![Split and incomplete recordings](docs/screenshots/settings-repair.jpg)
+
+the recordings row,
+
+![Recordings row settings](docs/screenshots/settings-recordings-row.jpg)
+
+and the trash:
+
+![Trash settings](docs/screenshots/settings-trash.jpg)
+
 ## Install
 
 ### From the JellyDVR plugin repository (no build needed)
