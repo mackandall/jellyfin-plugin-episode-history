@@ -48,6 +48,7 @@ public sealed class TrashFilterTests : IDisposable
         _libraryManager.Setup(m => m.GetVirtualFolders()).Returns(new List<VirtualFolderInfo> { new() { Locations = new[] { _library } } });
         _libraryManager.Setup(m => m.GetItemById(It.IsAny<Guid>())).Returns((Guid id) => _items.GetValueOrDefault(id));
         _userManager.Setup(m => m.GetUserById(_user.Id)).Returns(_user);
+        _userManager.Setup(m => m.GetUserById(Guid.Empty)).Throws(new ArgumentException("Guid can't be empty", "id"));
 
         var paths = new Mock<IApplicationPaths>();
         paths.Setup(p => p.DataPath).Returns(Path.Combine(_dir, "data"));
@@ -77,13 +78,18 @@ public sealed class TrashFilterTests : IDisposable
     private bool OnDisk(BaseItem item) => File.Exists(item.Path);
 
     /// <summary>Runs the filter on a request; the result it set, or null when it let Jellyfin answer.</summary>
-    private async Task<IActionResult?> Send(string method, string path, string query = "", Guid? userId = null)
+    private async Task<IActionResult?> Send(string method, string path, string query = "", Guid? userId = null, bool apiKey = false)
     {
         var http = new DefaultHttpContext();
         http.Request.Method = method;
         http.Request.Path = path;
         http.Request.QueryString = new QueryString(query);
-        if (userId != Guid.Empty)
+        if (apiKey)
+        {
+            // An API key signs in as no user: Jellyfin gives it an empty user id.
+            http.User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("Jellyfin-UserId", Guid.Empty.ToString()) }, "test"));
+        }
+        else if (userId != Guid.Empty)
         {
             http.User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("Jellyfin-UserId", (userId ?? _user.Id).ToString()) }, "test"));
         }
@@ -199,6 +205,18 @@ public sealed class TrashFilterTests : IDisposable
 
         Assert.True(_passedOn);
         Assert.True(OnDisk(movie));
+    }
+
+    [Fact]
+    public async Task ApiKey_JellyfinAnswers()
+    {
+        var movie = Movie("Heat (1995)");
+
+        var result = await Send("DELETE", $"/Items/{movie.Id}", apiKey: true);
+
+        Assert.Null(result);
+        Assert.True(_passedOn);
+        Assert.Empty(_trash.All());
     }
 
     [Fact]

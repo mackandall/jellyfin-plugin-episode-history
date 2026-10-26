@@ -43,7 +43,8 @@ public sealed class TrashFilter : IAsyncActionFilter
             return;
         }
 
-        var user = Guid.TryParse(context.HttpContext.User.FindFirst("Jellyfin-UserId")?.Value, out var userId) ? _userManager.GetUserById(userId) : null;
+        // An API key signs in as no user (an empty id): Jellyfin deletes it as asked, no trash.
+        var user = Guid.TryParse(context.HttpContext.User.FindFirst("Jellyfin-UserId")?.Value, out var userId) && userId != Guid.Empty ? _userManager.GetUserById(userId) : null;
         var items = ids.Select(id => _libraryManager.GetItemById(id)).ToList();
         if (user is null || items.Any(i => i is null || !i.CanDelete(user)) || !items.Any(i => i is Video or MediaBrowser.Controller.Entities.TV.Series or MediaBrowser.Controller.Entities.TV.Season))
         {
