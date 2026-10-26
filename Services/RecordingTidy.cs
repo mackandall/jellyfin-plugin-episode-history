@@ -2,19 +2,31 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities.TV;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.EpisodeHistory.Services;
 
 /// <summary>
-/// Clears up what a deleted recording leaves behind: the files beside it (.nfo, -thumb.jpg,
-/// .edl…) and, once no recording is left in them, its season and show folders.
+/// Clears up what a deleted recording, episode or movie leaves behind: the files beside it (.nfo,
+/// -thumb.jpg, .edl…) and, once no video is left in them, its season and show folders.
 /// </summary>
 internal static class RecordingTidy
 {
     private static readonly string[] SideExtensions = { ".nfo", ".edl", ".txt", ".log", ".xml", ".jpg", ".png", ".srt" };
 
     private static bool IsSide(string file) => SideExtensions.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether a deleted item's leftovers are tidied: any video in the recordings folders, and an
+    /// episode or movie in another library (an archive). Other videos (home videos, clips) may
+    /// share a folder with photos that must stay, so those are left as they are.
+    /// </summary>
+    public static bool Covers(BaseItem? item, IReadOnlyList<string> recordingFolders, IReadOnlyList<string> libraryFolders) =>
+        item is Video { Path: { Length: > 0 } path }
+        && (RecordingFiles.IsUnder(path, recordingFolders) || (item is Episode or Movie && RecordingFiles.IsUnder(path, libraryFolders)));
 
     /// <summary>What Jellyfin and Comskip leave next to a recording: its .nfo, -thumb.jpg, .edl and so on.</summary>
     public static void DeleteSideFiles(string? videoPath, ILogger logger)

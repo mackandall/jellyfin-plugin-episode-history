@@ -118,8 +118,9 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool FailedRecordingOnScreen { get; set; } = true;
 
     /// <summary>
-    /// When a recording is deleted (from any app), also delete the files beside it (.nfo,
-    /// thumbnail, .edl) and its season and show folders once no recording is left in them.
+    /// When a recording, or an episode or movie in another library, is deleted (from any app),
+    /// also delete the files beside it (.nfo, thumbnail, .edl) and its season and show folders
+    /// once no video is left in them.
     /// </summary>
     public bool TidyDeletedRecordings { get; set; } = true;
 

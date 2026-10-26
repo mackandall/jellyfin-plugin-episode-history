@@ -654,10 +654,11 @@ public sealed class HistoryEvents : IHostedService, IDisposable
                 _sweeper.Request("recording deleted");
             }
 
-            if (Config.TidyDeletedRecordings && e.Item is Video { Path: { Length: > 0 } path }
-                && RecordingFiles.Folders(_recordingsManager) is var roots && RecordingFiles.IsUnder(path, roots))
+            if (Config.TidyDeletedRecordings
+                && RecordingFiles.LibraryFolders(_libraryManager, _recordingsManager) is var roots
+                && RecordingTidy.Covers(e.Item, RecordingFiles.Folders(_recordingsManager), roots))
             {
-                _ = TidyAsync(path, roots, (e.Item as Episode)?.Series);
+                _ = TidyAsync(e.Item!.Path, roots, (e.Item as Episode)?.Series);
             }
         }
         catch (Exception ex)
@@ -667,8 +668,8 @@ public sealed class HistoryEvents : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// A deleted recording's leftovers (the files beside it, its emptied season and show folders)
-    /// go too, whoever deleted it. A moment later, so the delete itself has finished; a show whose
+    /// A deleted recording's, episode's or movie's leftovers (the files beside it, its emptied
+    /// season and show folders) go too, whoever deleted it. A moment later, so the delete itself has finished; a show whose
     /// folder went leaves the library with it.
     /// </summary>
     private async Task TidyAsync(string path, System.Collections.Generic.List<string> roots, Series? show)

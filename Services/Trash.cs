@@ -534,12 +534,7 @@ public sealed class Trash : IHostedService, IDisposable
     private static bool IsSide(string f) => SideExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The library and recording folders, each with a trailing separator.</summary>
-    private List<string> LibraryRoots() =>
-        _libraryManager.GetVirtualFolders().SelectMany(f => f.Locations)
-            .Concat(_recordingsManager.GetRecordingFolders().SelectMany(f => f.Locations))
-            .Select(p => Path.TrimEndingDirectorySeparator(p) + Path.DirectorySeparatorChar)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+    private List<string> LibraryRoots() => RecordingFiles.LibraryFolders(_libraryManager, _recordingsManager);
 
     /// <summary>
     /// The trash folder for a file: in the library folder it's under (the deepest one), when that

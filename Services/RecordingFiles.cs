@@ -23,6 +23,14 @@ internal static class RecordingFiles
             .Select(p => Path.TrimEndingDirectorySeparator(p) + Path.DirectorySeparatorChar)
             .ToList();
 
+    /// <summary>Every library folder and DVR recording folder, each with a trailing separator.</summary>
+    public static List<string> LibraryFolders(ILibraryManager libraryManager, IRecordingsManager recordingsManager) =>
+        libraryManager.GetVirtualFolders().SelectMany(f => f.Locations)
+            .Concat(recordingsManager.GetRecordingFolders().SelectMany(f => f.Locations))
+            .Select(p => Path.TrimEndingDirectorySeparator(p) + Path.DirectorySeparatorChar)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
     /// <summary>
     /// Live TV's general recording folders (not the movie or series ones), each with a trailing
     /// separator: where programmes without season and episode land.

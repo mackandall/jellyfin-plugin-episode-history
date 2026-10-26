@@ -56,4 +56,8 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="EpisodeHistory.Tests" />
+  </ItemGroup>
+
 </Project>
