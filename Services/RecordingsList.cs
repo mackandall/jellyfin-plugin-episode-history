@@ -329,7 +329,15 @@ public sealed class RecordingsList
                 continue;
             }
 
-            foreach (var item in folder.GetRecursiveChildren(i => i is Video { IsVirtualItem: false } v && v.OwnerId.Equals(Guid.Empty)).OfType<Video>())
+            // A recording made beside an existing copy (a re-record, or one resumed after a restart:
+            // "Name - 1.ts") is an alternate version of that copy, which the folder's children
+            // leave out; the ones being made or just ended are added from what is being tracked.
+            var pieces = (HistoryEvents.Current?.PendingPaths ?? Array.Empty<string>())
+                .Where(p => p.StartsWith(folderPath, StringComparison.Ordinal))
+                .Select(p => RecordingFiles.ItemAt(_libraryManager, p))
+                .OfType<Video>()
+                .Where(v => !v.OwnerId.Equals(Guid.Empty));
+            foreach (var item in folder.GetRecursiveChildren(i => i is Video { IsVirtualItem: false } v && v.OwnerId.Equals(Guid.Empty)).OfType<Video>().Concat(pieces))
             {
                 if (known.Contains(item.Id) || string.IsNullOrEmpty(item.Path)
                     || LiveBuffers.IsUnkeptBuffer(item))
@@ -372,7 +380,8 @@ public sealed class RecordingsList
                     continue;
                 }
 
-                if (!partials)
+                // Alternate versions only while being made or just ended (the joiner deals with the rest).
+                if (!partials || !item.OwnerId.Equals(Guid.Empty))
                 {
                     continue;
                 }

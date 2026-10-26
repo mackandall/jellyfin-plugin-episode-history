@@ -187,6 +187,9 @@ public sealed class HistoryEvents : IHostedService, IDisposable
     /// <summary>A recording that ended and is waiting for its counted / not counted decision.</summary>
     public bool IsPending(string path) => _pending.ContainsKey(path);
 
+    /// <summary>Every recording file being made or waiting for its decision.</summary>
+    public IReadOnlyList<string> PendingPaths => _pending.Keys.ToList();
+
     /// <summary>A recording whose decision was made (in the history if it counted, partial if not).</summary>
     public bool IsDecided(string path) => _dvrHandled.ContainsKey(path);
 
