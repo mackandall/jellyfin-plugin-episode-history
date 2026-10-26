@@ -158,15 +158,24 @@ public sealed class RecordingsList
 
         // Newest recording first; a show's card sits where its newest recording is.
         var groups = new List<List<Recording>>();
-        var byShow = new Dictionary<Guid, List<Recording>>();
+        var byShow = new Dictionary<string, List<Recording>>(StringComparer.Ordinal);
         foreach (var r in recordings)
         {
-            if (groupByShow && r.Item is Episode { SeriesId: var seriesId } && !seriesId.Equals(Guid.Empty))
+            if (groupByShow && r.Item is Episode { SeriesId: var seriesId } episode && !seriesId.Equals(Guid.Empty))
             {
-                if (!byShow.TryGetValue(seriesId, out var group))
+                // One card per show, not per folder: a show recorded in one place and moved to
+                // others has a series item in each, all with the show's merge key (as the
+                // library and the show's page join them).
+                var key = episode.FindSeriesPresentationUniqueKey();
+                if (string.IsNullOrEmpty(key))
+                {
+                    key = seriesId.ToString("N");
+                }
+
+                if (!byShow.TryGetValue(key, out var group))
                 {
                     group = new List<Recording>();
-                    byShow[seriesId] = group;
+                    byShow[key] = group;
                     groups.Add(group);
                 }
 
@@ -553,9 +562,16 @@ public sealed class RecordingsList
         if (newest.Item is Episode episode)
         {
             var seriesId = episode.SeriesId;
-            var imageId = !seriesId.Equals(Guid.Empty) && _libraryManager.GetItemById(seriesId) is { } series && series.HasImage(ImageType.Primary)
-                ? seriesId
-                : episode.Id;
+            // The show's poster from whichever of its folders has one.
+            var imageId = group.Select(r => (r.Item as Episode)?.SeriesId ?? Guid.Empty)
+                .Where(id => !id.Equals(Guid.Empty))
+                .Distinct()
+                .FirstOrDefault(id => _libraryManager.GetItemById(id) is { } series && series.HasImage(ImageType.Primary));
+            if (imageId.Equals(Guid.Empty))
+            {
+                imageId = episode.Id;
+            }
+
             var showName = episode.SeriesName ?? episode.Name;
             if (group.Count > 1)
             {
