@@ -669,8 +669,8 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
     /// <summary>
     /// A deleted recording's, episode's or movie's leftovers (the files beside it, its emptied
-    /// season and show folders) go too, whoever deleted it. A moment later, so the delete itself has finished; a season or
-    /// show whose folder went leaves the library with it, not at the next scan.
+    /// season and show folders) go too, whoever deleted it. A moment later, so the delete itself has finished; a season (with
+    /// no episode left in it) or show whose folder went leaves the library with it, not at the next scan.
     /// </summary>
     private async Task TidyAsync(string path, System.Collections.Generic.List<string> roots, Season? season, Series? show)
     {
@@ -682,7 +682,8 @@ public sealed class HistoryEvents : IHostedService, IDisposable
                 && !string.IsNullOrEmpty(season.Path)
                 && string.Equals(Path.TrimEndingDirectorySeparator(season.Path), Path.GetDirectoryName(path), StringComparison.Ordinal)
                 && !Directory.Exists(season.Path)
-                && _libraryManager.GetItemById(season.Id) is Season currentSeason)
+                && _libraryManager.GetItemById(season.Id) is Season currentSeason
+                && _libraryManager.GetCount(new InternalItemsQuery { ParentId = currentSeason.Id }) == 0)
             {
                 _libraryManager.DeleteItem(currentSeason, new DeleteOptions { DeleteFileLocation = false }, true);
             }
