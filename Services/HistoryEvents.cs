@@ -658,7 +658,7 @@ public sealed class HistoryEvents : IHostedService, IDisposable
                 && RecordingFiles.LibraryFolders(_libraryManager, _recordingsManager) is var roots
                 && RecordingTidy.Covers(e.Item, RecordingFiles.Folders(_recordingsManager), roots))
             {
-                _ = TidyAsync(e.Item!.Path, roots, (e.Item as Episode)?.Series);
+                _ = TidyAsync(e.Item!.Path, roots, (e.Item as Episode)?.Season, (e.Item as Episode)?.Series);
             }
         }
         catch (Exception ex)
@@ -669,15 +669,25 @@ public sealed class HistoryEvents : IHostedService, IDisposable
 
     /// <summary>
     /// A deleted recording's, episode's or movie's leftovers (the files beside it, its emptied
-    /// season and show folders) go too, whoever deleted it. A moment later, so the delete itself has finished; a show whose
-    /// folder went leaves the library with it.
+    /// season and show folders) go too, whoever deleted it. A moment later, so the delete itself has finished; a season or
+    /// show whose folder went leaves the library with it, not at the next scan.
     /// </summary>
-    private async Task TidyAsync(string path, System.Collections.Generic.List<string> roots, Series? show)
+    private async Task TidyAsync(string path, System.Collections.Generic.List<string> roots, Season? season, Series? show)
     {
         try
         {
             await Task.Delay(TidyDelay).ConfigureAwait(false);
-            if (RecordingTidy.AfterDelete(path, roots, _logger)
+            var showGone = RecordingTidy.AfterDelete(path, roots, _logger);
+            if (season is not null
+                && !string.IsNullOrEmpty(season.Path)
+                && string.Equals(Path.TrimEndingDirectorySeparator(season.Path), Path.GetDirectoryName(path), StringComparison.Ordinal)
+                && !Directory.Exists(season.Path)
+                && _libraryManager.GetItemById(season.Id) is Season currentSeason)
+            {
+                _libraryManager.DeleteItem(currentSeason, new DeleteOptions { DeleteFileLocation = false }, true);
+            }
+
+            if (showGone
                 && show is not null
                 && string.Equals(Path.TrimEndingDirectorySeparator(show.Path ?? string.Empty), RecordingTidy.ShowFolder(path), StringComparison.Ordinal)
                 && _libraryManager.GetItemById(show.Id) is Series current)
