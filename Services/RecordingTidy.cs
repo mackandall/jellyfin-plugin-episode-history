@@ -15,9 +15,12 @@ namespace Jellyfin.Plugin.EpisodeHistory.Services;
 /// </summary>
 internal static class RecordingTidy
 {
-    private static readonly string[] SideExtensions = { ".nfo", ".edl", ".txt", ".log", ".xml", ".jpg", ".png", ".srt" };
+    // As the trash's: SageTV and Emby archives add .ts.properties, .ini and .vprj files.
+    private static readonly string[] SideExtensions = { ".nfo", ".edl", ".txt", ".log", ".xml", ".jpg", ".png", ".srt", ".properties", ".vprj", ".ini" };
 
-    private static bool IsSide(string file) => SideExtensions.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase);
+    private static bool IsSide(string file) =>
+        SideExtensions.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase)
+        || string.Equals(Path.GetFileName(file), "Thumbs.db", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Whether a deleted item's leftovers are tidied: any video in the recordings folders, and an
@@ -28,7 +31,10 @@ internal static class RecordingTidy
         item is Video { Path: { Length: > 0 } path }
         && (RecordingFiles.IsUnder(path, recordingFolders) || (item is Episode or Movie && RecordingFiles.IsUnder(path, libraryFolders)));
 
-    /// <summary>What Jellyfin and Comskip leave next to a recording: its .nfo, -thumb.jpg, .edl and so on.</summary>
+    /// <summary>
+    /// What Jellyfin, Comskip and other DVRs leave next to a recording: its .nfo, -thumb.jpg, .edl,
+    /// .ts.properties and so on, and the picture Emby keeps for it in a "metadata" folder.
+    /// </summary>
     public static void DeleteSideFiles(string? videoPath, ILogger logger)
     {
         var dir = Path.GetDirectoryName(videoPath);
@@ -37,11 +43,16 @@ internal static class RecordingTidy
             return;
         }
 
+        var name = Path.GetFileName(videoPath)!;
         var stem = Path.GetFileNameWithoutExtension(videoPath)!;
-        foreach (var f in Directory.EnumerateFiles(dir))
+        var metadata = Path.Combine(dir, "metadata");
+        var files = Directory.EnumerateFiles(dir)
+            .Concat(Directory.Exists(metadata) ? Directory.EnumerateFiles(metadata) : Enumerable.Empty<string>())
+            .ToList();
+        foreach (var f in files)
         {
             var rest = Path.GetFileNameWithoutExtension(f);
-            if (IsSide(f) && (rest == stem || rest == stem + "-thumb"))
+            if (IsSide(f) && (rest == stem || rest == stem + "-thumb" || Path.GetFileName(f).StartsWith(name + ".", StringComparison.Ordinal)))
             {
                 try
                 {
