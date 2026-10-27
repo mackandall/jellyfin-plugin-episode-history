@@ -357,7 +357,11 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                 _store.AddCancelled(cancelKey, title, skipReason);
                 cancelledIds.Add(timer.Id);
                 cancelled.Add(title + " @ " + timer.StartDate.ToLocalTime().ToString("g", System.Globalization.CultureInfo.CurrentCulture));
-                _logger.LogInformation("Cancelled {Kind} recording of {Title} at {Start:u}: {Reason}", series ? "series" : "favourite", title, timer.StartDate, skipReason);
+                _logger.LogInformation(
+                    series ? "Cancelled series recording of {Title} at {Start:u}: {Reason}" : "Cancelled favourite's recording of {Title} at {Start:u}: {Reason}",
+                    title,
+                    timer.StartDate,
+                    skipReason);
             }
         }
 
