@@ -24,7 +24,9 @@ namespace Jellyfin.Plugin.EpisodeHistory.Services;
 /// <item>Cancels each upcoming series-recording episode whose recorded copy is currently in
 /// the library (duplicate skipping). Uses ILiveTvManager.CancelTimer, which Jellyfin
 /// records as a manual cancellation, so its series-timer refresh won't reschedule it. A
-/// timer is only ever cancelled once, so re-enabling it by hand sticks.</item>
+/// timer is only ever cancelled once, so re-enabling it by hand sticks. One-off recordings
+/// a JellyDVR Schedule favourite scheduled (with its "skip episodes in the library") are
+/// cancelled the same way, once per airing.</item>
 /// <item>Marks guide entries by rewriting their episode title ("✓● What's in the Box?").
 /// Jellyfin's guide refresh leaves an entry alone while its XMLTV data is unchanged
 /// (programme etag), so marks survive refreshes; changed entries get re-marked on the
@@ -51,6 +53,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     private readonly LibraryImporter _importer;
     private readonly RecordingsList _recordings;
     private readonly ScheduleOutcomes _outcomes;
+    private readonly ScheduleFavourites _favourites;
     private readonly Programmes _programmes;
     private readonly ILogger<GuideSweeper> _logger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
@@ -69,11 +72,13 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         LibraryImporter importer,
         RecordingsList recordings,
         ScheduleOutcomes outcomes,
+        ScheduleFavourites favourites,
         Programmes programmes,
         ILogger<GuideSweeper> logger)
     {
         _programmes = programmes;
         _outcomes = outcomes;
+        _favourites = favourites;
         _recordings = recordings;
         _libraryManager = libraryManager;
         _liveTvManager = liveTvManager;
@@ -306,10 +311,15 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             var rerecords = _programmes.All()
                 .Where(p => p.State is Programmes.Waiting or Programmes.Scheduled)
                 .ToList();
+            var favourites = _favourites.SkipInLibraryPrograms();
             foreach (var timer in timers)
             {
-                if (timer.Status != RecordingStatus.New || string.IsNullOrEmpty(timer.SeriesTimerId)
-                    || timer.StartDate <= now.AddMinutes(1) || _store.HasCancelled(timer.Id))
+                // A favourite's airing is remembered by programme, so scheduling it again by hand sticks.
+                var series = !string.IsNullOrEmpty(timer.SeriesTimerId);
+                var favourite = !series && Guid.TryParse(timer.ProgramId, out var programId) && favourites.Contains(programId);
+                var cancelKey = favourite ? FavouriteCancelKey(timer.ProgramId) : timer.Id;
+                if (timer.Status != RecordingStatus.New || !(series || favourite)
+                    || timer.StartDate <= now.AddMinutes(1) || _store.HasCancelled(cancelKey))
                 {
                     continue;
                 }
@@ -326,9 +336,10 @@ public sealed class GuideSweeper : IHostedService, IDisposable
                     continue;
                 }
 
+                // A favourite's own setting is about the library only, not watched episodes.
                 var state = index.Evaluate(identity);
                 var skipReason = state.InLibrary ? "episode already in library"
-                    : cfg.SkipWatchedEpisodes && state.Watched ? "episode already watched"
+                    : series && cfg.SkipWatchedEpisodes && state.Watched ? "episode already watched"
                     : null;
                 if (skipReason is null)
                 {
@@ -337,11 +348,16 @@ public sealed class GuideSweeper : IHostedService, IDisposable
 
                 var title = HistoryEvents.Describe(program.Name, marker.Strip(program.EpisodeTitle));
                 await _liveTvManager.CancelTimer(timer.Id).ConfigureAwait(false);
-                await DisarmAsync(timer, cancellationToken).ConfigureAwait(false);
-                _store.AddCancelled(timer.Id, title, skipReason);
+                if (series)
+                {
+                    // A cancelled one-off is deleted outright; only series episodes stay armed.
+                    await DisarmAsync(timer, cancellationToken).ConfigureAwait(false);
+                }
+
+                _store.AddCancelled(cancelKey, title, skipReason);
                 cancelledIds.Add(timer.Id);
                 cancelled.Add(title + " @ " + timer.StartDate.ToLocalTime().ToString("g", System.Globalization.CultureInfo.CurrentCulture));
-                _logger.LogInformation("Cancelled series recording of {Title} at {Start:u}: {Reason}", title, timer.StartDate, skipReason);
+                _logger.LogInformation("Cancelled {Kind} recording of {Title} at {Start:u}: {Reason}", series ? "series" : "favourite", title, timer.StartDate, skipReason);
             }
         }
 
@@ -468,6 +484,9 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             reason, programs.Count, watched, inLibrary, recordedBefore, changed.Count, cancelled.Count, fixedTimers, sw.ElapsedMilliseconds);
         return result;
     }
+
+    /// <summary>The skipped-recordings key of a favourite's airing (its timer id changes if it's scheduled again).</summary>
+    internal static string FavouriteCancelKey(string programId) => "favourite:" + programId.ToLowerInvariant();
 
     /// <summary>
     /// Makes a cancelled series episode really not record. Jellyfin 12 cancels a series

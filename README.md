@@ -20,7 +20,8 @@ watched state at all. This plugin adds:
   get a word instead, e.g. `✓ Watched`.
 - **Duplicate skipping.** An upcoming series-recording episode is cancelled while a
   recorded copy of that episode is in the library. Delete the copy and the next airing
-  records again.
+  records again. The same goes for recordings a JellyDVR Schedule favourite scheduled, when
+  the favourite skips episodes in the library.
 
 Target: Jellyfin 12.0.x (.NET 10).
 
