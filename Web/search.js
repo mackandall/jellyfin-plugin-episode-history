@@ -6,7 +6,9 @@
  * switch where those rows start; List hides them and shows what's coming up as one list,
  * soonest first, grouped by day like Live TV > Schedule: time, channel logo and number, title,
  * episode, New/Live/Premiere, and whether it's set to record. A row opens the program, as its
- * poster does. The choice is remembered in this browser.
+ * poster does, and its ⋮ opens jellyfin-web's own menu for it, as the poster's does (so the other
+ * plugins' entries — Other airings…, Recording Favourites… — are there too). The choice is
+ * remembered in this browser.
  *
  * The list is its own search for the same words, not the posters' programs: jellyfin-web's
  * rows hold an arbitrary 100 of the matches, aired ones included (a search for "news" here
@@ -22,6 +24,10 @@
  *   - Program cards have data-type "Program" (TvProgram/LiveTvProgram accepted too).
  *   - Our bar and list sit inside `div.searchResults`, before the first program row; React
  *     leaves nodes it didn't make alone.
+ *   - The ⋮ menu: inside an `emby-itemscontainer`, a `.itemAction[data-action="menu"]` button
+ *     opens the menu for the nearest element with data-id/data-type/data-serverid (as on
+ *     cards); the plugins' menu additions find it the same way, but only on a `.card` or
+ *     `.listItem`, hence the row's listItem class.
  */
 (function () {
   'use strict';
@@ -129,6 +135,8 @@
       '.' + LIST_CLASS + ' .ehSText { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: .2em; }',
       '.' + LIST_CLASS + ' .ehSTitle { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
       '.' + LIST_CLASS + ' .ehSSub { font-size: .85em; opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '.' + LIST_CLASS + ' .ehSMenu { flex-shrink: 0; margin: -.3em -.5em -.3em 0; opacity: .75; }',
+      '.' + LIST_CLASS + ' .ehSMenu:hover, .' + LIST_CLASS + ' .ehSMenu:focus { opacity: 1; }',
       '.' + LIST_CLASS + ' .ehSChips { display: flex; flex-wrap: wrap; gap: .35em; justify-content: flex-end; flex-shrink: 0; }',
       '.' + LIST_CLASS + ' .ehSChip { font-size: .72em; padding: .1em .5em; border-radius: .35em; background: rgba(255,255,255,.1); }',
       '.' + LIST_CLASS + ' .ehSChip-new { background: #2e7d32; color: #fff; font-weight: 600; }',
@@ -297,14 +305,19 @@
     var end = p.EndDate ? new Date(p.EndDate) : null;
     var numbers = p.ParentIndexNumber != null && p.IndexNumber != null ? 'S' + p.ParentIndexNumber + ' E' + p.IndexNumber : '';
     var sub = [p.EpisodeTitle, numbers, p.IsMovie && p.ProductionYear ? String(p.ProductionYear) : ''].filter(Boolean).join(' · ');
-    return '<button type="button" class="ehSRow" data-id="' + esc(p.Id) + '">'
+    var serverId = window.ApiClient.serverId ? window.ApiClient.serverId() : (p.ServerId || '');
+    return '<div class="ehSRow listItem" role="button" tabindex="0" data-id="' + esc(p.Id) + '" data-type="' + esc(p.Type || 'Program') + '"'
+      + ' data-serverid="' + esc(serverId) + '" data-channelid="' + esc(p.ChannelId || '') + '" data-isfolder="false"'
+      + ' data-startdate="' + esc(p.StartDate || '') + '" data-enddate="' + esc(p.EndDate || '') + '">'
       + '<span class="ehSTime">' + esc(onNow ? 'On now' : timeText(start))
       + (end ? '<span class="ehSEnd">until ' + esc(timeText(end)) + '</span>' : '') + '</span>'
       + '<span class="ehSLogoCol">' + logoHtml(p) + '<span class="ehSChNum">' + esc(p.ChannelNumber || '') + '</span></span>'
       + '<span class="ehSText"><span class="ehSTitle">' + esc(p.Name) + '</span>'
       + (sub ? '<span class="ehSSub">' + esc(sub) + '</span>' : '') + '</span>'
       + '<span class="ehSChips">' + chipsHtml(p) + '</span>'
-      + '</button>';
+      + '<button type="button" is="paper-icon-button-light" class="itemAction ehSMenu" data-action="menu" title="More" aria-label="More">'
+      + '<span class="material-icons more_vert" aria-hidden="true"></span></button>'
+      + '</div>';
   }
 
   function listHtml(s) {
@@ -329,7 +342,7 @@
         day = label;
         html += '<section class="ehSDay"><h3 class="ehSDayHead">' + esc(label)
           + (onNow ? '' : ' <span class="ehSDayDate">' + esc(d.toLocaleDateString(undefined, { month: 'long', day: 'numeric' })) + '</span>')
-          + '</h3><div class="ehSRows">';
+          + '</h3><div is="emby-itemscontainer" class="itemsContainer ehSRows">';
       }
       html += rowHtml(p, onNow);
     });
@@ -447,9 +460,17 @@
       return;
     }
     var row = t.closest('.' + LIST_CLASS + ' .ehSRow');
-    if (row) {
+    if (row && !t.closest('.itemAction')) {
       var serverId = window.ApiClient.serverId && window.ApiClient.serverId();
       window.location.hash = '#/details?id=' + row.getAttribute('data-id') + (serverId ? '&serverId=' + serverId : '');
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    var row = e.target && e.target.classList && e.target.classList.contains('ehSRow') && e.target.closest('.' + LIST_CLASS) ? e.target : null;
+    if (row && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      row.click();
     }
   });
 
