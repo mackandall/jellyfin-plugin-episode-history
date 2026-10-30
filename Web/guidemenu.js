@@ -56,6 +56,12 @@
     trash.src = '/EpisodeHistory/web/trash.js';
     document.head.appendChild(trash);
 
+    // The Posters/List switch for TV programs on the search page.
+    var search = document.createElement('script');
+    search.defer = true;
+    search.src = '/EpisodeHistory/web/search.js';
+    document.head.appendChild(search);
+
     // JellyDVR Schedule's "all tuners are busy" message (a 404 without that plugin is harmless).
     var tuners = document.createElement('script');
     tuners.defer = true;

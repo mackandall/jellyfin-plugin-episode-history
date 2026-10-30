@@ -43,6 +43,7 @@
     <EmbeddedResource Include="Web\guidemenu.js" />
     <EmbeddedResource Include="Web\recordings.js" />
     <EmbeddedResource Include="Web\trash.js" />
+    <EmbeddedResource Include="Web\search.js" />
   </ItemGroup>
 
   <!-- Plain files next to the DLL: meta.json's "imagePath" is the only icon mechanism that

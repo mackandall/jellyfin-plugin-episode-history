@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace Jellyfin.Plugin.EpisodeHistory.Web;
 
 /// <summary>
-/// Serves the jellyfin-web scripts (guidemenu.js, recordings.js) embedded in this assembly.
+/// Serves the jellyfin-web scripts (guidemenu.js and the ones it loads) embedded in this assembly.
 /// jellyfin-web's index.html is patched to load it from here (see install-web.sh; the
 /// plugin can't write that root-owned file itself), so a plugin redeploy is enough to
 /// update the script.
@@ -32,6 +32,11 @@ public sealed class WebAssetsController : ControllerBase
     [HttpGet("trash.js")]
     [Produces("application/javascript")]
     public Task<ContentResult> GetTrashJs() => Embedded("trash.js");
+
+    /// <summary>The Posters/List switch for TV programs on the search page; guidemenu.js loads it.</summary>
+    [HttpGet("search.js")]
+    [Produces("application/javascript")]
+    public Task<ContentResult> GetSearchJs() => Embedded("search.js");
 
     private async Task<ContentResult> Embedded(string fileName)
     {
