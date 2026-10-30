@@ -329,7 +329,10 @@
       return '<div class="ehSEmpty">Nothing coming up.</div>';
     }
     var remaining = s.total - s.first - s.programs.length;
-    var html = '<div class="ehSCount">' + (remaining > 0 ? 'The next ' + programs.length + ' airings, soonest first.' : programs.length + (programs.length === 1 ? ' airing' : ' airings') + ', soonest first.') + '</div>';
+    // The posters count these too, so say why the list has fewer.
+    var aired = s.first + s.programs.length - programs.length;
+    var html = '<div class="ehSCount">' + (remaining > 0 ? 'The next ' + programs.length + ' airings, soonest first.' : programs.length + (programs.length === 1 ? ' airing' : ' airings') + ', soonest first.')
+      + (aired > 0 ? ' ' + aired + (aired === 1 ? ' that already aired isn\'t' : ' that already aired aren\'t') + ' shown.' : '') + '</div>';
     var day = null;
     programs.forEach(function (p) {
       var d = new Date(p.StartDate);
