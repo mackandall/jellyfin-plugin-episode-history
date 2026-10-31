@@ -119,6 +119,9 @@
       '.' + LIST_CLASS + ' .ehSDayHead { margin: 0 0 .5em .2em; font-size: 1.05em; font-weight: 600; }',
       '.' + LIST_CLASS + ' .ehSDayDate { font-weight: 400; opacity: .6; margin-left: .4em; }',
       '.' + LIST_CLASS + ' .ehSRows { background: rgba(255,255,255,.04); border-radius: .7em; overflow: hidden; }',
+      // jellyfin-web lays an itemsContainer out as one row of cards; ours is a column of rows.
+      '.' + LIST_CLASS + ' .ehSRows.itemsContainer { display: flex; flex-direction: column; flex-wrap: nowrap; }',
+      '.' + LIST_CLASS + ' .ehSRows .ehSRow { width: 100%; }',
       '.' + LIST_CLASS + ' .ehSRow { all: unset; box-sizing: border-box; width: 100%; display: flex; gap: .9em; align-items: center;',
       '  padding: .6em 1em; border-top: 1px solid rgba(255,255,255,.06); cursor: pointer; }',
       '.' + LIST_CLASS + ' .ehSRows > .ehSRow:first-child { border-top: 0; }',
