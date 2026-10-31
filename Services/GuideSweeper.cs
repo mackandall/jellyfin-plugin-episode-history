@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.EpisodeHistory.Configuration;
 using Jellyfin.Plugin.EpisodeHistory.History;
+using MediaBrowser.Common.Extensions;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
@@ -508,6 +509,12 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             await _liveTvManager.UpdateTimer(timer, cancellationToken).ConfigureAwait(false);
             _disarmed.Add(timer.Id);
             _logger.LogInformation("Stopped the start timer of cancelled series recording {Name} at {Start:u}", timer.Name, timer.StartDate);
+        }
+        catch (ResourceNotFoundException)
+        {
+            // Gone already: cancelling the whole series recording deletes its timers too.
+            _disarmed.Add(timer.Id);
+            _logger.LogDebug("Start timer of cancelled series recording {Name} at {Start:u} is already gone", timer.Name, timer.StartDate);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
