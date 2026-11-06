@@ -114,6 +114,8 @@ public sealed class RecordingRepair
             DeleteReplaced(cfg);
         }
 
+        await SettleBuffersAsync(ct).ConfigureAwait(false);
+
         // Only airings with something left to do: undecided ones, and joined ones not yet in the history.
         foreach (var p in _programmes.All()
             .Where(p => p.State == Programmes.None || (p.JoinedPath is not null && p.Counted && !p.JoinCounted))
@@ -146,6 +148,37 @@ public sealed class RecordingRepair
     }
 
     private static bool UnkeptBuffer(Programmes.Programme p) => p.Pieces.Any(x => LiveBuffers.IsUnkeptBuffer(x.Path));
+
+    /// <summary>
+    /// A live TV buffer put on the list to be recorded again: it was taken for a recording when it
+    /// started, because JellyDVR Live notes the buffer's file up to 20 s after the recording
+    /// begins. Nobody asked for it, so it isn't recorded again (a timer of ours is cancelled) and
+    /// it leaves Needs attention.
+    /// </summary>
+    private async Task SettleBuffersAsync(CancellationToken ct)
+    {
+        foreach (var p in _programmes.All().Where(p => p.State is Programmes.Waiting or Programmes.Scheduled && !p.Manual && UnkeptBuffer(p)))
+        {
+            if (p.State == Programmes.Scheduled && p.NextIsOurs && p.NextProgramId is { } programId)
+            {
+                var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items;
+                foreach (var t in timers.Where(t => string.Equals(t.ProgramId, programId, StringComparison.OrdinalIgnoreCase) && t.Status == RecordingStatus.New))
+                {
+                    await LiveTv.CancelTimer(t.Id).ConfigureAwait(false);
+                }
+            }
+
+            Set(p, x =>
+            {
+                x.IsBuffer = true;
+                x.State = Programmes.Complete;
+                x.NextProgramId = null;
+                x.NextStartUtc = null;
+                x.NextChannel = null;
+            });
+            _logger.LogInformation("{Title} was a live TV buffer, not a recording: it won't be recorded again", p.Title);
+        }
+    }
 
     // ---- joining -----------------------------------------------------------------------------
 
@@ -331,7 +364,7 @@ public sealed class RecordingRepair
             });
             _logger.LogInformation("{Title} was recorded again but came out incomplete too ({Percent:F0}%)", p.Title, p.Percent);
         }
-        else if (!cfg.AutoRerecord || p.IsBuffer || !Reliable(p.Identity))
+        else if (!cfg.AutoRerecord || p.IsBuffer || UnkeptBuffer(p) || !Reliable(p.Identity))
         {
             state = Programmes.Complete;
         }
