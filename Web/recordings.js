@@ -375,22 +375,55 @@
       b.classList.toggle('episodeHistoryRecordingsFilter-active', b.getAttribute('data-filter') === filter);
     });
     var items = section.querySelector('.episodeHistoryRecordingsItems');
-    items.innerHTML = '';
     var cards = (data && data.Cards) || [];
     if (!cards.length) {
       var label = filter === 'archived' ? 'No archived recordings yet.'
         : filter === 'current' ? 'Nothing in the recordings folders.' : 'No recordings yet.';
+      items.innerHTML = '';
       items.appendChild(el('div', 'episodeHistoryRecordingsEmpty', label));
       return;
     }
-    items.innerHTML = cards.map(function (c) {
+    var html = cards.map(function (c) {
       return cardHtml({
         id: c.Id, type: c.Type, name: c.Name, subtitle: c.Subtitle, image: imageUrl(c.ImageId),
         count: c.Count, unplayed: c.UnplayedCount, played: c.UnplayedCount === 0, archived: c.ArchivedCount,
         partial: c.PartialCount || 0, partialMinutes: c.PartialMinutes, recording: c.RecordingCount || 0,
         stallText: c.StallText, stallTitle: c.StallTitle
       });
-    }).join('');
+    });
+    patchCards(items, html);
+  }
+
+  // Only the cards whose markup changed are replaced; the others (their poster, and what other
+  // scripts added to them: the Comskip badge, Space's marks) stay as they are. Rebuilding all of
+  // them on every refresh made the whole grid blink, and Safari decode every poster again.
+  function patchCards(items, html) {
+    var spare = {};
+    [].slice.call(items.children).forEach(function (n) {
+      if (n.ehHtml) {
+        spare[n.ehHtml] = n;
+      }
+    });
+    html.forEach(function (h, i) {
+      var at = items.children[i];
+      if (at && at.ehHtml === h) {
+        delete spare[h];
+        return;
+      }
+      var node = spare[h];
+      if (node) {
+        delete spare[h];
+      } else {
+        var tmp = document.createElement('div');
+        tmp.innerHTML = h;
+        node = tmp.firstElementChild;
+        node.ehHtml = h;
+      }
+      items.insertBefore(node, at || null);
+    });
+    while (items.children.length > html.length) {
+      items.removeChild(items.lastElementChild);
+    }
   }
 
   function sectionLimit(section) {
@@ -612,6 +645,7 @@
     var list = section.querySelector('.ehDate');
     var recordings = data.Recordings || [];
     if (!recordings.length) {
+      list.ehHtml = null;
       list.innerHTML = '';
       list.appendChild(el('div', 'episodeHistoryRecordingsEmpty', 'No recordings yet.'));
       return;
@@ -639,6 +673,11 @@
       html += rowHtml(r, logoRight, r.Id === selected);
     });
     html += '</div></section></div><aside class="ehDateDetail" aria-label="Selected recording"></aside>';
+    // Same list as shown: leave it (and its logos) alone rather than redraw it.
+    if (list.ehHtml === html && list.querySelector('.ehDateDetail')) {
+      return;
+    }
+    list.ehHtml = html;
     list.innerHTML = html;
     showDetail(section, recordings, selected);
   }
