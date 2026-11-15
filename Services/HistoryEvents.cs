@@ -538,6 +538,12 @@ public sealed class HistoryEvents : IHostedService, IDisposable
                 "Recording {Title} stalled: no data from {At:HH:mm:ss} for {Lost:F0} min in all; {Ran:F0} of {Scheduled:F0} minutes are in the file",
                 pending.Title, firstStall.ToLocalTime(), stalled.TotalMinutes, ran.TotalMinutes, scheduled.TotalMinutes);
         }
+        else if (_stalls.Remove(path))
+        {
+            // Notes are by file name: a recording made again at the same name (Dune: Part Two,
+            // re-recorded 2026-11-10) kept the stalled one's warning.
+            _logger.LogInformation("Recording {Title} came in without a stall; the earlier recording's stall warning for {File} is cleared", pending.Title, Path.GetFileName(path));
+        }
 
         if (percent < Config.MinRecordedPercent)
         {
