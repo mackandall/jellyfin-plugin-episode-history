@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Threading;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Data.Sqlite;
 
@@ -35,6 +36,47 @@ public sealed class HistoryStore
     }
 
     public string DatabasePath { get; }
+
+    // Bumped as each write to the history finishes, so what's built from the history (the rows,
+    // the guide index) can be kept until it changes.
+    private long _version;
+
+    /// <summary>Changes whenever the history table does.</summary>
+    public long Version => Interlocked.Read(ref _version);
+
+    private VersionBump Changing() => new(this);
+
+    private readonly struct VersionBump : IDisposable
+    {
+        private readonly HistoryStore _store;
+
+        public VersionBump(HistoryStore store) => _store = store;
+
+        public void Dispose() => Interlocked.Increment(ref _store._version);
+    }
+
+    private sealed record RowsSnapshot(long Version, List<Row> Rows);
+
+    // Replaced whole (a reference), so a reader on another thread sees one snapshot or the other.
+    private RowsSnapshot? _allRows;
+
+    /// <summary>
+    /// Every history row, kept between calls while the history is unchanged: the guide index and
+    /// each programme menu's "can forget" check read them all, and the table holds thousands.
+    /// The list is shared: don't change it.
+    /// </summary>
+    public IReadOnlyList<Row> LoadAllShared()
+    {
+        var version = Version;
+        if (_allRows is { } kept && kept.Version == version)
+        {
+            return kept.Rows;
+        }
+
+        var rows = LoadAll();
+        _allRows = new RowsSnapshot(version, rows);
+        return rows;
+    }
 
     public sealed record Row(
         long Id,
@@ -129,6 +171,7 @@ public sealed class HistoryStore
     {
         lock (_lock)
         {
+            using var changed_ = Changing();
             using var conn = Open();
             using var tx = conn.BeginTransaction();
             using var cmd = conn.CreateCommand();
@@ -155,6 +198,7 @@ public sealed class HistoryStore
     {
         lock (_lock)
         {
+            using var changed_ = Changing();
             using var conn = Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "UPDATE history SET item_id = $item WHERE id = $id";
@@ -197,6 +241,7 @@ public sealed class HistoryStore
     {
         lock (_lock)
         {
+            using var changed_ = Changing();
             using var conn = Open();
             using var tx = conn.BeginTransaction();
             int changed = 0;
@@ -271,6 +316,7 @@ public sealed class HistoryStore
     {
         lock (_lock)
         {
+            using var changed_ = Changing();
             using var conn = Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "DELETE FROM history WHERE kind = $kind AND user_id = $user AND item_id = $item";
@@ -298,6 +344,7 @@ public sealed class HistoryStore
     {
         lock (_lock)
         {
+            using var changed_ = Changing();
             using var conn = Open();
             using var tx = conn.BeginTransaction();
             using var cmd = conn.CreateCommand();
@@ -377,6 +424,7 @@ public sealed class HistoryStore
     {
         lock (_lock)
         {
+            using var changed_ = Changing();
             using var conn = Open();
             using var tx = conn.BeginTransaction();
             using var cmd = conn.CreateCommand();

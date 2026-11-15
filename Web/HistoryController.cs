@@ -1163,7 +1163,7 @@ public sealed class HistoryController : ControllerBase
         _store.LoadWatched(userId, ManualSource).Where(r => r.Identity.SameEpisode(identity)).ToList();
 
     private List<HistoryStore.Row> ForgettableRows(EpisodeIdentity identity) =>
-        ForgettableRows(_store.LoadAll().Where(r => r.Identity.SameEpisode(identity)));
+        ForgettableRows(_store.LoadAllShared().Where(r => r.Identity.SameEpisode(identity)));
 
     // Hand-made marks (their item id is a guide entry) always go; other rows only once
     // their library item is gone.

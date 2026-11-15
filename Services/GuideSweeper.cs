@@ -297,7 +297,9 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         // so a recording moved to an archive folder still counts as in the library.
         _recordings.Resolve();
         var marker = new GuideMarker(cfg);
+        var version = _store.Version;
         var index = BuildIndex(cfg, marker);
+        KeepIndex(index, version, cfg);
         var now = DateTime.UtcNow;
 
         var timers = (await _liveTvManager.GetTimers(new TimerQuery(), cancellationToken).ConfigureAwait(false)).Items.ToList();
@@ -576,7 +578,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
 
     private HistoryIndex BuildIndex(PluginConfiguration cfg, GuideMarker marker)
     {
-        var index = new HistoryIndex(_store.LoadAll(), id => _libraryManager.GetItemById(id) is not null);
+        var index = new HistoryIndex(_store.LoadAllShared(), id => _libraryManager.GetItemById(id) is not null);
         if (cfg.CountAllLibraries)
         {
             var items = _libraryManager.GetItemList(new InternalItemsQuery
@@ -635,11 +637,43 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             return null;
         }
 
-        var marker = new GuideMarker(Plugin.Instance?.Configuration ?? new PluginConfiguration());
+        var cfg = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        var marker = new GuideMarker(cfg);
         var identity = EpisodeIdentity.FromProgram(program, marker);
-        var index = BuildIndex(Plugin.Instance?.Configuration ?? new PluginConfiguration(), marker);
+        var index = RecentIndex(cfg, marker);
         return (identity, index.Evaluate(identity), index.LibraryItems(identity));
     }
+
+    // A client's programme menu asks about one programme at a time, and building the index reads
+    // the whole history and every episode and movie in the libraries (over a second). It's kept
+    // while the history is unchanged, the settings are the same, and for at most a minute (items
+    // added to or removed from a library show within that); the sweep's own fresh index replaces it.
+    private static readonly TimeSpan IndexFresh = TimeSpan.FromMinutes(1);
+
+    private sealed record KeptIndex(HistoryIndex Index, long Version, PluginConfiguration Config, DateTime BuiltUtc);
+
+    // Replaced whole (a reference): readers on other threads see one or the other.
+    private KeptIndex? _keptIndex;
+
+    private HistoryIndex RecentIndex(PluginConfiguration cfg, GuideMarker marker)
+    {
+        var version = _store.Version;
+        if (_keptIndex is { } kept
+            && kept.Version == version
+            && ReferenceEquals(kept.Config, cfg)
+            && DateTime.UtcNow - kept.BuiltUtc < IndexFresh)
+        {
+            return kept.Index;
+        }
+
+        var index = BuildIndex(cfg, marker);
+        KeepIndex(index, version, cfg);
+        return index;
+    }
+
+    // The history version is read before the index is built: a change made meanwhile makes it stale.
+    private void KeepIndex(HistoryIndex index, long version, PluginConfiguration cfg) =>
+        _keptIndex = new KeptIndex(index, version, cfg, DateTime.UtcNow);
 }
 
 /// <summary>
