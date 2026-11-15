@@ -24,6 +24,7 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<RecordingRepair>();
         serviceCollection.AddSingleton<RecordingChannels>();
         serviceCollection.AddSingleton<ScheduleLedger>();
+        serviceCollection.AddSingleton<AlertInbox>();
         serviceCollection.AddSingleton<RecordingsList>();
         serviceCollection.AddSingleton<ScheduleOutcomes>();
         serviceCollection.AddSingleton<ScheduleFavourites>();

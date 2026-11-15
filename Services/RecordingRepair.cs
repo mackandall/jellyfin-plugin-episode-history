@@ -58,6 +58,7 @@ public sealed class RecordingRepair
     private readonly IRecordingsManager _recordingsManager;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<RecordingRepair> _logger;
+    private readonly AlertInbox _alerts;
     private int _joining;
     private DateTime _lastSearch = DateTime.MinValue;
     private DateTime _lastClean = DateTime.MinValue;
@@ -72,8 +73,10 @@ public sealed class RecordingRepair
         ILibraryMonitor libraryMonitor,
         IRecordingsManager recordingsManager,
         IServiceProvider serviceProvider,
+        AlertInbox alerts,
         ILogger<RecordingRepair> logger)
     {
+        _alerts = alerts;
         _programmes = programmes;
         _airings = airings;
         _stalls = stalls;
@@ -391,6 +394,31 @@ public sealed class RecordingRepair
                 x.FlaggedUtc = state == Programmes.Waiting ? now : null;
             }
         });
+
+        if (!complete && state != Programmes.Stopped && !p.IsBuffer && !UnkeptBuffer(p))
+        {
+            var stalled = p.Pieces.Sum(x => x.StalledSeconds);
+            _alerts.Send(new AlertInbox.Report
+            {
+                Kind = AlertInbox.Short,
+                Key = AlertInbox.KeyFor(p.Key),
+                Title = p.Title + " came out short",
+                Text = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Only {0:0} of {1:0} minutes were recorded{2}.",
+                    p.CapturedSeconds / 60,
+                    p.ScheduledSeconds / 60,
+                    stalled >= 60 ? string.Format(CultureInfo.InvariantCulture, " (the tuner sent nothing for {0:0} min)", stalled / 60) : string.Empty),
+                Next = state switch
+                {
+                    Programmes.Waiting => "It will be recorded again at the next airing found in the guide.",
+                    Programmes.Attempt => "It was a try at replacing an incomplete recording; another airing will be looked for.",
+                    _ => cfg.AutoRerecord ? "The guide can't tell this episode from the others, so it isn't recorded again by itself." : "Recording again is turned off."
+                },
+                AiredUtc = p.ProgramStartUtc,
+                ItemId = RecordingFiles.ItemAt(_libraryManager, last.Path)?.Id
+            });
+        }
     }
 
     private static bool Same(Programmes.Programme a, Programmes.Programme b) =>
@@ -400,6 +428,13 @@ public sealed class RecordingRepair
     // library and deleted after the keep days, deleted at once, or kept, by setting.
     private void Replace(Programmes.Programme old, Programmes.Programme full, PluginConfiguration cfg)
     {
+        _alerts.Send(new AlertInbox.Report
+        {
+            Kind = AlertInbox.Short,
+            Key = AlertInbox.KeyFor(old.Key),
+            Fixed = true,
+            Text = string.Format(CultureInfo.InvariantCulture, "{0} was recorded again in full ({1:ddd h:mm tt}).", old.Title, full.ProgramStartUtc.ToLocalTime())
+        });
         var mode = (cfg.RerecordReplace ?? string.Empty).ToLowerInvariant() switch
         {
             "keep" => "keep",
@@ -638,6 +673,14 @@ public sealed class RecordingRepair
             _logger.LogInformation(
                 "{Title} will be recorded again on {Start:u} ({Channel}){How}",
                 p.Title, next.StartUtc, channel, ours ? string.Empty : ": a recording was already set for it");
+            _alerts.Send(new AlertInbox.Report
+            {
+                Kind = AlertInbox.Short,
+                Key = AlertInbox.KeyFor(p.Key),
+                UpdateOnly = true,
+                Next = string.Format(CultureInfo.InvariantCulture, "Re-record set for {0:ddd h:mm tt}{1}.", next.StartUtc.ToLocalTime(), string.IsNullOrEmpty(channel) ? string.Empty : " on " + channel),
+                ProgramId = next.ProgramId
+            });
         }
     }
 
@@ -712,6 +755,16 @@ public sealed class RecordingRepair
                 _lastSearch = DateTime.MinValue; // look in the guide at once
             }
 
+            _alerts.Send(new AlertInbox.Report
+            {
+                Kind = AlertInbox.Failed,
+                Key = AlertInbox.KeyFor(e.Key),
+                Title = e.Title + " didn't record",
+                Text = string.IsNullOrWhiteSpace(e.Reason) ? "Nothing was recorded." : e.Reason!,
+                Next = next,
+                Where = e.ChannelName is null ? null : (e.ChannelNumber is null ? string.Empty : e.ChannelNumber + " ") + e.ChannelName,
+                AiredUtc = e.StartUtc
+            });
             lines.Add(string.Format(
                 CultureInfo.InvariantCulture,
                 "{0} ({1}{2:ddd h:mm tt}) didn't record. {3} {4}",
