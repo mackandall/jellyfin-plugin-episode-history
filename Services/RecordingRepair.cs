@@ -38,6 +38,10 @@ namespace Jellyfin.Plugin.EpisodeHistory.Services;
 /// </summary>
 public sealed class RecordingRepair
 {
+    // Said before the guide search runs; it replaces this with "Re-record set for …" when it finds an
+    // airing (a game or a one-time special usually has none).
+    private const string NoAiringYet = "No other airing is in the guide yet. If one shows up, it will be recorded.";
+
     // A stopped piece may be followed by another (the tuner tuned again, the server restarted):
     // the airing is over once its end has passed, or nothing more came for this long.
     private static readonly TimeSpan AfterProgramEnd = TimeSpan.FromMinutes(3);
@@ -411,7 +415,9 @@ public sealed class RecordingRepair
                     stalled >= 60 ? string.Format(CultureInfo.InvariantCulture, " (the tuner sent nothing for {0:0} min)", stalled / 60) : string.Empty),
                 Next = state switch
                 {
-                    Programmes.Waiting => "It will be recorded again at the next airing found in the guide.",
+                    // The guide search runs next and replaces this with "Re-record set for …" when it
+                    // finds an airing; a game or a one-time special usually has none.
+                    Programmes.Waiting => NoAiringYet,
                     Programmes.Attempt => "It was a try at replacing an incomplete recording; another airing will be looked for.",
                     _ => cfg.AutoRerecord ? "The guide can't tell this episode from the others, so it isn't recorded again by itself." : "Recording again is turned off."
                 },
@@ -747,10 +753,10 @@ public sealed class RecordingRepair
                     State = Programmes.Waiting,
                     FlaggedUtc = now
                 }));
-                next = "It will be recorded at the next airing found in the guide.";
+                next = NoAiringYet;
             }
 
-            if (next.StartsWith("It will", StringComparison.Ordinal) || next.StartsWith("Another", StringComparison.Ordinal))
+            if (next == NoAiringYet || next.StartsWith("Another", StringComparison.Ordinal))
             {
                 _lastSearch = DateTime.MinValue; // look in the guide at once
             }
