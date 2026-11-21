@@ -1311,6 +1311,49 @@
   }
 
   /*
+   * "Forget this episode" (a guide entry whose episode the history remembers) and "Forget this
+   * show" (a guide entry, show or episode whose show it remembers), as in the guide's programme
+   * dialog: the history stops counting them, so their marks (recorded before, watched) go from the
+   * guide and a series recording records them again. Copies still in the library keep counting,
+   * and nothing is deleted. Administrators only (the server refuses everyone else, so nothing is
+   * offered). Calls add(icon, label, armedLabel, run) per entry; run() returns a promise.
+   */
+  function forgetEntries(id, item, add) {
+    var client = window.ApiClient;
+    var isProgram = /Program$/.test(item.Type || '');
+    var isMovie = item.Type === 'Movie' || item.IsMovie === true;
+    function call(type, path, query) {
+      return client.ajax({ type: type, url: client.getUrl(path, query || {}), dataType: 'json' });
+    }
+    if (isProgram) {
+      call('GET', 'EpisodeHistory/Program/' + id).then(function (r) {
+        if (!r || !r.CanForget) {
+          return;
+        }
+        add('history', isMovie ? 'Forget this movie' : 'Forget this episode', 'Press again to forget', function () {
+          return call('DELETE', 'EpisodeHistory/Program/' + id + '/History').then(function (d) {
+            notify(d && d.KeptInLibrary ? 'Forgotten. A copy still in the library keeps counting.' : 'Forgotten: its marks go from the guide and it records again.');
+          });
+        });
+      }).catch(function () {});
+    }
+    if (isMovie || !(isProgram || item.Type === 'Series' || item.Type === 'Episode')) {
+      return;
+    }
+    call('DELETE', 'EpisodeHistory/Item/' + id + '/ShowHistory', { dryRun: true }).then(function (r) {
+      if (!r || !r.Episodes) {
+        return;
+      }
+      var label = 'Forget this show (' + r.Episodes + ' episode' + (r.Episodes === 1 ? '' : 's') + ')';
+      add('history', label, 'Press again: forget all of ' + r.Show, function () {
+        return call('DELETE', 'EpisodeHistory/Item/' + id + '/ShowHistory').then(function (d) {
+          notify('Forgot ' + r.Show + (d && d.KeptInLibrary ? '. Copies still in the library keep counting.' : ': its marks go from the guide and its episodes record again.'));
+        });
+      });
+    }).catch(function () {});
+  }
+
+  /*
    * "Re-record…" (recordings Jellyfin made: pick an airing or let it choose; the new recording
    * replaces this one when it is in full), "Cancel re-record" once asked, and "Other airings…"
    * for any movie or episode. Calls add(icon, label, onClick) per entry.
@@ -1708,10 +1751,29 @@
       b.addEventListener('click', onClick);
       return b;
     }
+    // Forget entries: the first press arms (the sheet stays open), the second forgets and closes it.
+    function addForget(icon, label, armedLabel, run) {
+      if (!scroller.isConnected || scroller.querySelector('[data-id="episodehistory-forget-' + label.split(' ')[2] + '"]')) {
+        return;
+      }
+      var armed = false;
+      var entry = sheetEntry('episodehistory-forget-' + label.split(' ')[2], icon, label, function (e) {
+        if (!armed) {
+          armed = true;
+          e.preventDefault();
+          e.stopPropagation();
+          entry.querySelector('.actionSheetItemText').textContent = armedLabel;
+          return;
+        }
+        run().catch(function () { notify('That couldn\'t be forgotten.'); });
+      });
+      scroller.appendChild(entry);
+    }
     client.getItem(client.getCurrentUserId(), id).then(function (item) {
       if (!item) {
         return;
       }
+      forgetEntries(id, item, addForget);
       if (item.Type === 'Series' || item.Type === 'Episode' || item.Type === 'Movie' || item.Type === 'Video') {
         var stopCount = 0;
         stopRecordingEntries(id, function (label, onClick) {
