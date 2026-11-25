@@ -199,7 +199,7 @@ public sealed class Airings
             return (new List<Airing>(), reach);
         }
 
-        var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items
+        var timers = (await TimerLists.LiveAsync(LiveTv, ct).ConfigureAwait(false))
             .Where(t => t.Status is RecordingStatus.New or RecordingStatus.InProgress)
             .ToList();
         var sources = Sources();

@@ -302,7 +302,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         KeepIndex(index, version, cfg);
         var now = DateTime.UtcNow;
 
-        var timers = (await _liveTvManager.GetTimers(new TimerQuery(), cancellationToken).ConfigureAwait(false)).Items.ToList();
+        var timers = await TimerLists.LiveAsync(_liveTvManager, cancellationToken).ConfigureAwait(false);
 
         // 1. Duplicate skipping.
         var cancelled = new List<string>();
@@ -370,10 +370,22 @@ public sealed class GuideSweeper : IHostedService, IDisposable
 
         // Series episodes cancelled elsewhere (the web/TV clients, or Jellyfin's own series
         // refresh) have the same problem as the ones cancelled above.
-        foreach (var timer in timers.Where(t => t.Status == RecordingStatus.Cancelled
-            && !string.IsNullOrEmpty(t.SeriesTimerId) && t.StartDate > now && !_disarmed.Contains(t.Id)))
+        // (Read raw, then looked up one by one only if not seen this run: there are hundreds.)
+        foreach (var id in await TimerLists.CancelledSeriesEpisodeIdsAsync(_liveTvManager, now, cancellationToken).ConfigureAwait(false))
         {
-            await DisarmAsync(timer, cancellationToken).ConfigureAwait(false);
+            if (_disarmed.Contains(id))
+            {
+                continue;
+            }
+
+            if (await _liveTvManager.GetTimer(id, cancellationToken).ConfigureAwait(false) is { } timer)
+            {
+                await DisarmAsync(timer, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                _disarmed.Add(id);
+            }
         }
 
         var activeTimers = timers
@@ -562,7 +574,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             var marker = new GuideMarker(cfg);
             var state = BuildIndex(cfg, marker).Evaluate(EpisodeIdentity.FromProgram(program, marker));
 
-            var timers = (await _liveTvManager.GetTimers(new TimerQuery(), cancellationToken).ConfigureAwait(false)).Items;
+            var timers = await TimerLists.LiveAsync(_liveTvManager, cancellationToken).ConfigureAwait(false);
             var scheduled = timers.Any(t => (t.Status == RecordingStatus.New || t.Status == RecordingStatus.InProgress)
                 && Guid.TryParse(t.ProgramId, out var id) && id == programId);
 

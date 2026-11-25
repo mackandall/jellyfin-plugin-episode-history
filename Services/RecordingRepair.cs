@@ -168,7 +168,7 @@ public sealed class RecordingRepair
         {
             if (p.State == Programmes.Scheduled && p.NextIsOurs && p.NextProgramId is { } programId)
             {
-                var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items;
+                var timers = (await TimerLists.LiveAsync(LiveTv, ct).ConfigureAwait(false));
                 foreach (var t in timers.Where(t => string.Equals(t.ProgramId, programId, StringComparison.OrdinalIgnoreCase) && t.Status == RecordingStatus.New))
                 {
                     await LiveTv.CancelTimer(t.Id).ConfigureAwait(false);
@@ -599,7 +599,7 @@ public sealed class RecordingRepair
         var now = DateTime.UtcNow;
         var sameChannel = string.Equals(cfg.RerecordChannelScope, "same", StringComparison.OrdinalIgnoreCase);
         var max = Math.Clamp(cfg.RerecordMaxAttempts, 1, 10);
-        var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items;
+        var timers = (await TimerLists.LiveAsync(LiveTv, ct).ConfigureAwait(false));
         bool Active(string? programId) => programId is not null && timers.Any(t =>
             string.Equals(t.ProgramId, programId, StringComparison.OrdinalIgnoreCase)
             && t.Status is not (RecordingStatus.Cancelled or RecordingStatus.Completed or RecordingStatus.Error));
@@ -869,7 +869,7 @@ public sealed class RecordingRepair
     {
         if (p.State == Programmes.Scheduled && p.NextIsOurs && p.NextProgramId is { } programId)
         {
-            var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items;
+            var timers = (await TimerLists.LiveAsync(LiveTv, ct).ConfigureAwait(false));
             foreach (var t in timers.Where(t => string.Equals(t.ProgramId, programId, StringComparison.OrdinalIgnoreCase) && t.Status == RecordingStatus.New))
             {
                 await LiveTv.CancelTimer(t.Id).ConfigureAwait(false);
@@ -960,7 +960,7 @@ public sealed class RecordingRepair
             }
 
             var id = picked.ToString("N");
-            var timers = (await LiveTv.GetTimers(new TimerQuery(), ct).ConfigureAwait(false)).Items;
+            var timers = (await TimerLists.LiveAsync(LiveTv, ct).ConfigureAwait(false));
             var already = timers.Any(t => string.Equals(t.ProgramId, id, StringComparison.OrdinalIgnoreCase)
                 && t.Status is not (RecordingStatus.Cancelled or RecordingStatus.Completed or RecordingStatus.Error));
             if (!already)

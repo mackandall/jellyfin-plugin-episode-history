@@ -218,7 +218,12 @@ public sealed class RecordingsList
         var other = Plugin.Instance?.Configuration is { RecordingsRowIncludeOther: false }
             ? new List<string>()
             : RecordingFiles.OtherFolders(_recordingsManager);
-        return WithPartials(Resolve())
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var resolved = Resolve();
+        var resolveMs = sw.ElapsedMilliseconds;
+        var all = WithPartials(resolved);
+        var partialsMs = sw.ElapsedMilliseconds - resolveMs;
+        var picked = all
             .Where(r => r.Item.IsVisible(user))
             .Where(r => includeMovies || r.Item is not Movie || RecordingFiles.IsUnder(r.Item.Path, other))
             .Where(r => filter switch
@@ -231,8 +236,17 @@ public sealed class RecordingsList
             .OrderByDescending(x => x.Recording.InProgress)
             .ThenByDescending(x => x.At)
             .Take(Math.Clamp(limit, 1, 1000))
-            .Select(x => ToDateEntry(x.Recording, x.At, user))
             .ToList();
+        var pickedMs = sw.ElapsedMilliseconds - resolveMs - partialsMs;
+        var entries = picked.Select(x => ToDateEntry(x.Recording, x.At, user)).ToList();
+        if (sw.ElapsedMilliseconds > 1000)
+        {
+            _logger.LogInformation(
+                "Recordings by date took {Ms} ms: history {Resolve} ms ({Rows} recordings), partials {Partials} ms, sorting {Picked} ms, lines {Lines} ms ({Count})",
+                sw.ElapsedMilliseconds, resolveMs, resolved.Count, partialsMs, pickedMs, sw.ElapsedMilliseconds - resolveMs - partialsMs - pickedMs, entries.Count);
+        }
+
+        return entries;
     }
 
     private DateEntry ToDateEntry(Recording r, DateTime at, User user)
@@ -553,7 +567,10 @@ public sealed class RecordingsList
     private static DateTime StartedAt(Recording r)
     {
         var at = RecordedAt(r);
-        return r.Item.RunTimeTicks is > 0 and var ticks ? at - TimeSpan.FromTicks(ticks) : at;
+        var start = r.Item.RunTimeTicks is > 0 and var ticks ? at - TimeSpan.FromTicks(ticks) : at;
+        // To the nearest minute: the length is a little short of the file's, so 22:27:58 is the
+        // recording that began at 22:28 (shown cut to the minute, it read a minute early).
+        return new DateTime((start.Ticks + TimeSpan.TicksPerMinute / 2) / TimeSpan.TicksPerMinute * TimeSpan.TicksPerMinute, start.Kind);
     }
 
     private Card ToCard(List<Recording> group, User user, IReadOnlyList<string> otherFolders)
