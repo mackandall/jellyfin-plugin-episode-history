@@ -25,13 +25,13 @@ internal static class TimerLists
     /// for every timer, about 40 ms each; only the timer's own fields and channel name are used here.
     /// </summary>
     public static Task<List<TimerInfoDto>> LiveAsync(ILiveTvManager liveTv, ILibraryManager library, CancellationToken ct) =>
-        ReadAsync(liveTv, library, s => s is RecordingStatus.New or RecordingStatus.InProgress, ct);
+        ReadAsync(liveTv, library, t => t.Status is RecordingStatus.New or RecordingStatus.InProgress, ct);
 
     /// <summary>The recordings under way.</summary>
     public static Task<List<TimerInfoDto>> RunningAsync(ILiveTvManager liveTv, ILibraryManager library, CancellationToken ct) =>
-        ReadAsync(liveTv, library, s => s == RecordingStatus.InProgress, ct);
+        ReadAsync(liveTv, library, t => t.Status == RecordingStatus.InProgress, ct);
 
-    private static async Task<List<TimerInfoDto>> ReadAsync(ILiveTvManager liveTv, ILibraryManager library, Func<RecordingStatus, bool> wanted, CancellationToken ct)
+    private static async Task<List<TimerInfoDto>> ReadAsync(ILiveTvManager liveTv, ILibraryManager library, Func<TimerInfo, bool> wanted, CancellationToken ct)
     {
         var list = new List<TimerInfoDto>();
         var channels = new Dictionary<Guid, string?>();
@@ -47,7 +47,7 @@ internal static class TimerLists
                 continue; // as GetTimers: a failing service is left out
             }
 
-            foreach (var t in raw.Where(t => wanted(t.Status)))
+            foreach (var t in raw.Where(wanted))
             {
                 list.Add(Light(library, service.Name, t, channels));
             }
@@ -94,22 +94,11 @@ internal static class TimerLists
     }
 
     /// <summary>
-    /// The API ids of cancelled series episodes still to come, read from the services themselves
-    /// (no look-ups). [ServiceName + external id], as Jellyfin's LiveTvDtoService.GetInternalTimerId.
+    /// Cancelled series episodes still to come (hundreds), as light DTOs: enough for
+    /// UpdateTimer, which reads only the external ids, times, padding and service name.
     /// </summary>
-    public static async Task<List<string>> CancelledSeriesEpisodeIdsAsync(ILiveTvManager liveTv, DateTime afterUtc, CancellationToken ct)
-    {
-        var ids = new List<string>();
-        foreach (var service in liveTv.Services)
-        {
-            var raw = await service.GetTimersAsync(ct).ConfigureAwait(false);
-            ids.AddRange(raw
-                .Where(t => t.Status == RecordingStatus.Cancelled && !string.IsNullOrEmpty(t.SeriesTimerId) && t.StartDate > afterUtc)
-                .Select(t => InternalTimerId(service.Name, t.Id)));
-        }
-
-        return ids;
-    }
+    public static Task<List<TimerInfoDto>> CancelledSeriesEpisodesAsync(ILiveTvManager liveTv, ILibraryManager library, DateTime afterUtc, CancellationToken ct) =>
+        ReadAsync(liveTv, library, t => t.Status == RecordingStatus.Cancelled && !string.IsNullOrEmpty(t.SeriesTimerId) && t.StartDate > afterUtc, ct);
 
     /// <summary>The API id Jellyfin gives a service's timer.</summary>
     public static string InternalTimerId(string serviceName, string externalId) =>

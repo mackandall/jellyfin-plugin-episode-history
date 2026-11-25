@@ -370,21 +370,12 @@ public sealed class GuideSweeper : IHostedService, IDisposable
 
         // Series episodes cancelled elsewhere (the web/TV clients, or Jellyfin's own series
         // refresh) have the same problem as the ones cancelled above.
-        // (Read raw, then looked up one by one only if not seen this run: there are hundreds.)
-        foreach (var id in await TimerLists.CancelledSeriesEpisodeIdsAsync(_liveTvManager, now, cancellationToken).ConfigureAwait(false))
+        // (Hundreds: read light, and each only once per server run.)
+        foreach (var timer in await TimerLists.CancelledSeriesEpisodesAsync(_liveTvManager, _libraryManager, now, cancellationToken).ConfigureAwait(false))
         {
-            if (_disarmed.Contains(id))
-            {
-                continue;
-            }
-
-            if (await _liveTvManager.GetTimer(id, cancellationToken).ConfigureAwait(false) is { } timer)
+            if (!_disarmed.Contains(timer.Id))
             {
                 await DisarmAsync(timer, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                _disarmed.Add(id);
             }
         }
 
