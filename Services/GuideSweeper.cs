@@ -302,7 +302,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
         KeepIndex(index, version, cfg);
         var now = DateTime.UtcNow;
 
-        var timers = await TimerLists.LiveAsync(_liveTvManager, cancellationToken).ConfigureAwait(false);
+        var timers = await TimerLists.LiveAsync(_liveTvManager, _libraryManager, cancellationToken).ConfigureAwait(false);
 
         // 1. Duplicate skipping.
         var cancelled = new List<string>();
@@ -574,7 +574,7 @@ public sealed class GuideSweeper : IHostedService, IDisposable
             var marker = new GuideMarker(cfg);
             var state = BuildIndex(cfg, marker).Evaluate(EpisodeIdentity.FromProgram(program, marker));
 
-            var timers = await TimerLists.LiveAsync(_liveTvManager, cancellationToken).ConfigureAwait(false);
+            var timers = await TimerLists.LiveAsync(_liveTvManager, _libraryManager, cancellationToken).ConfigureAwait(false);
             var scheduled = timers.Any(t => (t.Status == RecordingStatus.New || t.Status == RecordingStatus.InProgress)
                 && Guid.TryParse(t.ProgramId, out var id) && id == programId);
 

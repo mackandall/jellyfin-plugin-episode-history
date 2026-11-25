@@ -829,7 +829,7 @@ public sealed class HistoryController : ControllerBase
 
         var channel = _libraryManager.GetItemById(next.ChannelId)?.Name;
         var programId = next.Id.ToString("N");
-        var timers = await TimerLists.LiveAsync(_liveTvManager, cancellationToken).ConfigureAwait(false);
+        var timers = await TimerLists.LiveAsync(_liveTvManager, _libraryManager, cancellationToken).ConfigureAwait(false);
         var already = timers.Any(t => string.Equals(t.ProgramId, programId, StringComparison.OrdinalIgnoreCase)
             && t.Status is not (RecordingStatus.Cancelled or RecordingStatus.Completed or RecordingStatus.Error));
         if (!already && !dryRun)
@@ -1117,7 +1117,7 @@ public sealed class HistoryController : ControllerBase
         }
 
         // CancelTimer wants the timer's API id; the recording knows it by the DVR's own id.
-        var timers = await TimerLists.RunningAsync(_liveTvManager, cancellationToken).ConfigureAwait(false);
+        var timers = await TimerLists.RunningAsync(_liveTvManager, _libraryManager, cancellationToken).ConfigureAwait(false);
         var dto = timers.FirstOrDefault(t => string.Equals(t.ExternalId, timer.Id, StringComparison.Ordinal));
         if (dto is null)
         {
