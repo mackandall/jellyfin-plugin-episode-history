@@ -543,7 +543,14 @@ public sealed class GuideSweeper : IHostedService, IDisposable
     /// </summary>
     public async Task<string?> ApplyNowAsync(Guid programId, CancellationToken cancellationToken)
     {
-        await _runLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // A sweep under way (one runs after every schedule change, ~15 s on a big guide): don't
+        // keep the client waiting behind it; the sweep queued after it applies this too.
+        if (!await _runLock.WaitAsync(TimeSpan.Zero, cancellationToken).ConfigureAwait(false))
+        {
+            Request("applied after a sweep under way", TimeSpan.FromSeconds(1));
+            return (_libraryManager.GetItemById(programId) as LiveTvProgram)?.EpisodeTitle;
+        }
+
         try
         {
             if (_libraryManager.GetItemById(programId) is not LiveTvProgram program)
